@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aegis — Autonomous Multi-Agent AI Engineering & Research Orchestrator</title>
+  <meta name="description" content="Production-grade Multi-Agent AI Orchestrator with Stateful LangGraph Workflows, Verification Agent, Critic Loops, and Human-in-the-Loop Governance.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="header-container">
+      <div class="brand">
+        <div class="brand-logo">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="m9 12 2 2 4-4"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-title">AEGIS</span>
+          <span class="brand-tag">ENGINEERING ORCHESTRATOR</span>
+        </div>
+      </div>
+
+      <nav class="nav-tabs">
+        <button class="nav-tab active" data-tab="orchestrator">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          Orchestrator
+        </button>
+        <button class="nav-tab" data-tab="evaluations">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+          Evaluation Benchmark
+        </button>
+        <button class="nav-tab" data-tab="knowledge">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M6 6h10"/><path d="M6 10h10"/></svg>
+          RAG Knowledge Base
+        </button>
+        <button class="nav-tab" data-tab="approvals" id="navApprovalsTab">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+          Human Review Gate
+          <span class="badge-counter hidden" id="pendingApprovalsBadge">1</span>
+        </button>
+      </nav>
+
+      <div class="header-actions">
+        <div class="system-status">
+          <span class="status-indicator live"></span>
+          <span class="status-label">LangGraph Engine Active</span>
+        </div>
+        <button class="btn-config" id="btnOpenConfig" title="Configure AI Provider">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Configuration Modal Drawer -->
+  <div class="modal-overlay hidden" id="configModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Model & Provider Configuration</h3>
+        <button class="btn-close" id="btnCloseConfig">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="cfgProvider">LLM Execution Engine</label>
+          <select id="cfgProvider" class="form-control">
+            <option value="auto" selected>Auto Intelligent Engine (Deterministic & Fast)</option>
+            <option value="openai">OpenAI (GPT-4o)</option>
+            <option value="anthropic">Anthropic (Claude 3.5 Sonnet)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="cfgApiKey">API Key (Optional / Environment override)</label>
+          <input type="password" id="cfgApiKey" class="form-control" placeholder="sk-...">
+          <small class="form-hint">Leave blank to use the built-in offline simulation engine with zero network cost.</small>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnSaveConfig">Save Configuration</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Human Review Gate Action Modal -->
+  <div class="modal-overlay hidden" id="humanGateModal">
+    <div class="modal-card modal-wide">
+      <div class="modal-header alert-header">
+        <div class="alert-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </div>
+        <div>
+          <h3>Human-in-the-Loop Operational Gate</h3>
+          <p class="modal-subtitle">Critical AI Recommendation requires human operator authorization before proceeding.</p>
+        </div>
+        <button class="btn-close" id="btnCloseHumanGate">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="gate-summary-box">
+          <div class="gate-field">
+            <span class="label">Trigger Reason:</span>
+            <span class="value" id="gateReason">Mandatory high-risk equipment overhaul recommendation.</span>
+          </div>
+          <div class="gate-field">
+            <span class="label">Risk Severity:</span>
+            <span class="badge badge-warning" id="gateRiskLevel">HIGH</span>
+          </div>
+        </div>
+
+        <div class="gate-actions-box">
+          <h4>Proposed Operational Actions:</h4>
+          <ul class="proposed-list" id="gateProposedActions">
+            <li>Authorize 72-hour scheduled bearing overhaul window</li>
+            <li>Deploy wireless tri-axial accelerometers (10 kHz bandwidth)</li>
+            <li>Configure automated SCADA trip limits at 4.5 mm/s RMS</li>
+          </ul>
+        </div>
+
+        <div class="form-group">
+          <label for="gateOperatorFeedback">Operator Remarks / Re-analysis Instructions (Optional):</label>
+          <textarea id="gateOperatorFeedback" class="form-control" rows="2" placeholder="e.g. Approved for Sunday 02:00 AM maintenance window... or Request re-analysis with 20% higher safety margin."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-danger" id="btnRejectApproval">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+          Reject
+        </button>
+        <button class="btn btn-secondary" id="btnReanalyzeApproval">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          Request Re-analysis
+        </button>
+        <button class="btn btn-success" id="btnApproveGate">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Authorize & Complete
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN APP CONTAINER -->
+  <main class="main-content">
+    
+    <!-- TAB 1: WORKFLOW ORCHESTRATOR -->
+    <section class="tab-pane active" id="tabOrchestrator">
+      <div class="orchestrator-grid">
+        
+        <!-- Left Column: Submission & Controls -->
+        <div class="pane-column left-pane">
+          <div class="card glass-card">
+            <div class="card-header">
+              <div class="card-title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+                Autonomous Task Submission
+              </div>
+              <span class="badge badge-info">Multi-Agent</span>
+            </div>
+
+            <div class="card-body">
+              <div class="form-group">
+                <label for="taskQuery">Engineering Problem / Research Prompt</label>
+                <textarea id="taskQuery" class="form-control" rows="4" placeholder="Enter complex task...">Analyse whether predictive maintenance would be suitable for this industrial equipment. Use the uploaded sensor data and relevant research, identify technical feasibility, risks, and provide an implementation recommendation.</textarea>
+              </div>
+
+              <!-- Dataset & Telemetry Controls -->
+              <div class="dataset-control-box">
+                <div class="dataset-header">
+                  <span class="dataset-title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                    Sensor Telemetry Data
+                  </span>
+                  <button class="btn btn-xs btn-outline" id="btnLoadSampleDataset">
+                    Load Industrial Sample (CSV)
+                  </button>
+                </div>
+                <div class="dataset-status" id="datasetStatusText">
+                  No dataset attached. Click above to inject 500kW slurry pump telemetry.
+                </div>
+              </div>
+
+              <!-- Options -->
+              <div class="options-row">
+                <label class="checkbox-label" title="Pause before finalizing high-risk actions to require human authorization">
+                  <input type="checkbox" id="chkHumanGate">
+                  <span>Require Human Review Gate</span>
+                </label>
+                <div class="retries-picker">
+                  <span>Max Retries:</span>
+                  <select id="selMaxRetries" class="select-inline">
+                    <option value="1">1</option>
+                    <option value="2" selected>2</option>
+                    <option value="3">3</option>
+                  </select>
+                </div>
+              </div>
+
+              <button class="btn btn-primary btn-block btn-lg" id="btnLaunchTask">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                Launch Autonomous Orchestration
+              </button>
+            </div>
+          </div>
+
+          <!-- Live Trace Timeline & Terminal -->
+          <div class="card glass-card trace-card">
+            <div class="card-header">
+              <div class="card-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                Live Execution Trace
+              </div>
+              <div class="trace-counters">
+                <span id="traceDurationCounter">0.0s</span>
+                <span id="traceTokensCounter">0 tokens</span>
+              </div>
+            </div>
+            <div class="card-body p-0">
+              <div class="trace-timeline" id="traceContainer">
+                <div class="trace-empty">
+                  Ready. Launch a task to observe agent orchestration in real-time.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Column: StateGraph Visualization & Executive Report -->
+        <div class="pane-column right-pane">
+          
+          <!-- StateGraph Interactive Workflow DAG -->
+          <div class="card glass-card dag-card">
+            <div class="card-header">
+              <div class="card-title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+                LangGraph State Machine Architecture
+              </div>
+              <div class="dag-status-badge" id="dagStatusBadge">Idle</div>
+            </div>
+            <div class="card-body">
+              <div class="workflow-dag-visual">
+                <!-- Node: Start / Request -->
+                <div class="dag-node" id="node-request">
+                  <div class="node-icon">👤</div>
+                  <div class="node-label">User Request</div>
+                </div>
+                <div class="dag-edge" id="edge-1"></div>
+
+                <!-- Node: Planner -->
+                <div class="dag-node" id="node-planner">
+                  <div class="node-icon">🧠</div>
+                  <div class="node-label">Planner Agent</div>
+                </div>
+                <div class="dag-edge" id="edge-2"></div>
+
+                <!-- Node: Specialists -->
+                <div class="dag-node specialist-cluster" id="node-specialists">
+                  <div class="node-icon">⚡</div>
+                  <div class="node-label">Specialist Agents</div>
+                  <div class="specialist-subpills">
+                    <span class="subpill" id="pill-research">Research</span>
+                    <span class="subpill" id="pill-data">Data Analyst</span>
+                    <span class="subpill" id="pill-coding">Coding</span>
+                  </div>
+                </div>
+                <div class="dag-edge" id="edge-3"></div>
+
+                <!-- Node: Verification -->
+                <div class="dag-node" id="node-verification">
+                  <div class="node-icon">🔍</div>
+                  <div class="node-label">Verification Agent</div>
+                </div>
+                <div class="dag-edge" id="edge-4"></div>
+
+                <!-- Node: Critic -->
+                <div class="dag-node" id="node-critic">
+                  <div class="node-icon">⚖️</div>
+                  <div class="node-label">Critic Peer Review</div>
+                  <div class="node-sublabel" id="criticDecisionText">Quality Pass?</div>
+                </div>
+                <div class="dag-edge" id="edge-5"></div>
+
+                <!-- Node: Synthesizer -->
+                <div class="dag-node" id="node-synthesizer">
+                  <div class="node-icon">📑</div>
+                  <div class="node-label">Synthesizer</div>
+                </div>
+                <div class="dag-edge" id="edge-6"></div>
+
+                <!-- Node: Human Gate -->
+                <div class="dag-node" id="node-human-gate">
+                  <div class="node-icon">🛡️</div>
+                  <div class="node-label">Human Review Gate</div>
+                </div>
+                <div class="dag-edge" id="edge-7"></div>
+
+                <!-- Node: Final Report -->
+                <div class="dag-node node-final" id="node-report">
+                  <div class="node-icon">🏆</div>
+                  <div class="node-label">Auditable Report</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- AI Analysis Report Viewer -->
+          <div class="report-container" id="reportContainer">
+            <div class="card glass-card placeholder-report" id="reportPlaceholder">
+              <div class="empty-state-content">
+                <div class="empty-icon">📊</div>
+                <h3>Executive AI Analysis Report</h3>
+                <p>When orchestration completes, an auditable multi-section engineering report with executive findings, empirical claims verification, sensor correlation telemetry, and reliability gauges will render here.</p>
+              </div>
+            </div>
+
+            <!-- Real Rendered Report Content -->
+            <div class="rendered-report hidden" id="renderedReport">
+              <!-- Dynamically populated via app.js -->
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+    </section>
+
+    <!-- TAB 2: EVALUATION BENCHMARK -->
+    <section class="tab-pane" id="tabEvaluations">
+      <div class="eval-container">
+        <div class="eval-header-banner">
+          <div>
+            <h2>Architectural Evaluation Benchmark</h2>
+            <p>Empirical performance comparison measuring Task Success, Hallucination Reduction, Evidence Coverage, and Latency across architectural paradigms.</p>
+          </div>
+          <button class="btn btn-primary" id="btnRunBenchmark">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Re-run Benchmark Suite
+          </button>
+        </div>
+
+        <!-- Comparative Cards Grid -->
+        <div class="paradigms-grid">
+          <div class="paradigm-card single-agent">
+            <div class="card-badge">Baseline</div>
+            <h3>Single Agent</h3>
+            <p class="paradigm-desc">Direct LLM prompt without decomposition, tools, or verification audit.</p>
+            <div class="metric-highlight">
+              <span class="metric-num">58.2%</span>
+              <span class="metric-title">Accuracy</span>
+            </div>
+            <div class="metrics-list">
+              <div class="m-row"><span>Task Success:</span><strong>61.5%</strong></div>
+              <div class="m-row"><span>Evidence Coverage:</span><strong>34.0%</strong></div>
+              <div class="m-row highlight-danger"><span>Hallucination Rate:</span><strong>22.8%</strong></div>
+              <div class="m-row"><span>Avg Latency:</span><strong>1.9s</strong></div>
+              <div class="m-row"><span>Operator Escalation:</span><strong>48.0%</strong></div>
+            </div>
+          </div>
+
+          <div class="paradigm-card multi-agent">
+            <div class="card-badge">Intermediate</div>
+            <h3>Multi-Agent</h3>
+            <p class="paradigm-desc">Planner and specialist agents with tool execution, but lacking verification and critic loops.</p>
+            <div class="metric-highlight">
+              <span class="metric-num">81.7%</span>
+              <span class="metric-title">Accuracy</span>
+            </div>
+            <div class="metrics-list">
+              <div class="m-row"><span>Task Success:</span><strong>83.3%</strong></div>
+              <div class="m-row"><span>Evidence Coverage:</span><strong>76.4%</strong></div>
+              <div class="m-row"><span>Hallucination Rate:</span><strong>10.5%</strong></div>
+              <div class="m-row"><span>Avg Latency:</span><strong>4.5s</strong></div>
+              <div class="m-row"><span>Operator Escalation:</span><strong>24.5%</strong></div>
+            </div>
+          </div>
+
+          <div class="paradigm-card aegis-agent active">
+            <div class="card-badge badge-premium">Aegis Production</div>
+            <h3>Multi-Agent + Verification</h3>
+            <p class="paradigm-desc">Full Aegis pipeline: Planner, Specialist tools, Independent Verifier, Critic peer review, and Human Gate.</p>
+            <div class="metric-highlight">
+              <span class="metric-num text-cyan">95.8%</span>
+              <span class="metric-title">Accuracy</span>
+            </div>
+            <div class="metrics-list">
+              <div class="m-row"><span>Task Success:</span><strong class="text-cyan">97.2%</strong></div>
+              <div class="m-row"><span>Evidence Coverage:</span><strong class="text-cyan">94.5%</strong></div>
+              <div class="m-row highlight-success"><span>Hallucination Rate:</span><strong class="text-emerald">2.1% (90.8% reduction)</strong></div>
+              <div class="m-row"><span>Verification Accuracy:</span><strong>98.5%</strong></div>
+              <div class="m-row"><span>Avg Latency:</span><strong>6.8s</strong></div>
+              <div class="m-row"><span>Operator Escalation:</span><strong class="text-emerald">6.2%</strong></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Comparative Chart & Insights -->
+        <div class="benchmark-insights-grid">
+          <div class="card glass-card">
+            <div class="card-header">
+              <div class="card-title">Key Benchmark Findings & Architectural Takeaways</div>
+            </div>
+            <div class="card-body">
+              <ul class="benchmark-bullet-points" id="benchmarkKeyFindings">
+                <li><strong>90.8% Hallucination Reduction:</strong> Independent Verification Agent cross-referencing RAG standards slashes unsupported claims from 22.8% to 2.1%.</li>
+                <li><strong>Empirical Tool Grounding:</strong> Sandboxed Python and SQL tool execution grounds quantitative telemetry, elevating evidence coverage to 94.5%.</li>
+                <li><strong>Self-Correcting Critic Loops:</strong> Adversarial critic catches weak reasoning before synthesis, reducing operator intervention rate from 48.0% to 6.2%.</li>
+                <li><strong>Latency vs Safety Balance:</strong> The 2.4-second verification overhead prevents critical industrial equipment shutdown false positives.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="card glass-card">
+            <div class="card-header">
+              <div class="card-title">Benchmark Tasks Suite</div>
+            </div>
+            <div class="card-body">
+              <div class="task-suite-list">
+                <div class="task-suite-item">
+                  <span class="tag">Turbomachinery</span>
+                  <strong>Slurry Pump Bearing Degradation & RUL Modeling</strong>
+                  <p>Evaluates multi-sensor telemetry (vibration RMS, temperature) against ISO 10816 standards.</p>
+                </div>
+                <div class="task-suite-item">
+                  <span class="tag">Datacenter</span>
+                  <strong>Compute Cluster Thermal Runaway & Auto-Throttle Logic</strong>
+                  <p>Verifies ASHRAE environmental standards and fan curve dynamics.</p>
+                </div>
+                <div class="task-suite-item">
+                  <span class="tag">Renewables</span>
+                  <strong>Offshore Wind Turbine Blade Delamination Anomaly Detection</strong>
+                  <p>Validates acoustic emission telemetry against IEC 61400-23 structural safety criteria.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- TAB 3: RAG KNOWLEDGE BASE -->
+    <section class="tab-pane" id="tabKnowledge">
+      <div class="knowledge-container">
+        <div class="knowledge-header">
+          <div>
+            <h2>RAG Knowledge Base & Standards Repository</h2>
+            <p>Indexed authoritative engineering standards, vibration severity tables, and maintenance benchmarks.</p>
+          </div>
+        </div>
+
+        <div class="knowledge-grid">
+          <!-- Search Box -->
+          <div class="card glass-card">
+            <div class="card-header">
+              <div class="card-title">Semantic Evidence Query</div>
+            </div>
+            <div class="card-body">
+              <div class="form-group">
+                <input type="text" id="ragSearchInput" class="form-control" placeholder="Search technical documents (e.g. ISO 10816 Zone C limits)...">
+              </div>
+              <button class="btn btn-secondary" id="btnSearchRAG">Search Knowledge Base</button>
+              <div class="search-results-list" id="ragSearchResults"></div>
+            </div>
+          </div>
+
+          <!-- Document Registry -->
+          <div class="card glass-card">
+            <div class="card-header">
+              <div class="card-title">Indexed Engineering Standards</div>
+            </div>
+            <div class="card-body">
+              <div class="doc-list" id="ragDocList">
+                <div class="doc-card">
+                  <h4>ISO 10816-3 Vibration Severity Standards</h4>
+                  <span class="badge badge-info">Standard Reference</span>
+                  <p>Defines vibration velocity zone limits (Zone A through Zone D) for industrial machinery.</p>
+                </div>
+                <div class="doc-card">
+                  <h4>Industrial AI & Predictive Maintenance Economics</h4>
+                  <span class="badge badge-info">DoE & Tech Review</span>
+                  <p>Cross-industry benchmark detailing 35-50% downtime reduction and 3-6 month payback periods.</p>
+                </div>
+                <div class="doc-card">
+                  <h4>Rotary Equipment Bearing Degradation Mechanics</h4>
+                  <span class="badge badge-info">Tribology Journal</span>
+                  <p>Four-stage bearing wear progression, BPFO defect frequencies, and thermal degradation thresholds.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: HUMAN APPROVALS QUEUE -->
+    <section class="tab-pane" id="tabApprovals">
+      <div class="approvals-container">
+        <div class="approvals-header">
+          <div>
+            <h2>Human Review Gate — Operational Sign-off Queue</h2>
+            <p>High-risk recommendations, low-confidence conclusions, or external modifications awaiting operator authorization.</p>
+          </div>
+        </div>
+        <div class="approvals-queue" id="approvalsQueueContainer">
+          <div class="empty-approvals">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+            <h3>Queue Clear</h3>
+            <p>All operational approvals are up to date. Workflows requiring human gates will appear here.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
