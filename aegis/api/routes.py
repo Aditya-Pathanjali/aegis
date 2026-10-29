@@ -68,12 +68,27 @@ def get_sample_telemetry():
 @router.post("/tasks", response_model=Dict[str, str])
 def submit_task(req: TaskCreateRequest):
     """Submits a new complex task for autonomous multi-agent decomposition and execution."""
+    import os
+
     settings = get_settings()
-    if not settings.provider:
+    if not settings.provider or not settings.model:
         raise HTTPException(
             status_code=503,
-            detail="No LLM provider configured. Set AEGIS_PROVIDER to 'anthropic' or 'openai'.",
+            detail="No LLM provider configured. Set AEGIS_PROVIDER and AEGIS_MODEL in environment.",
         )
+
+    if settings.provider == "anthropic" and not os.getenv("ANTHROPIC_API_KEY"):
+        raise HTTPException(
+            status_code=503,
+            detail="ANTHROPIC_API_KEY is not configured in environment.",
+        )
+
+    if settings.provider == "openai" and not os.getenv("OPENAI_API_KEY"):
+        raise HTTPException(
+            status_code=503,
+            detail="OPENAI_API_KEY is not configured in environment.",
+        )
+
     service = get_orchestrator_service()
     task_id = service.submit_task(
         TaskSubmission(

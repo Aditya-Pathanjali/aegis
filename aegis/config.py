@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     )
     model: Optional[str] = Field(
         default=None,
-        description="Default LLM model name.",
+        description="Default LLM model name. Required when provider is configured.",
     )
     judge_model: Optional[str] = Field(
         default=None,
@@ -61,6 +61,13 @@ class Settings(BaseSettings):
         default=384,
         description="Embedding vector dimensions.",
     )
+
+    @model_validator(mode="after")
+    def validate_provider_and_model(self) -> Settings:
+        """Enforce that model is explicitly configured whenever provider is set."""
+        if self.provider is not None and not self.model:
+            raise ValueError("model is required when provider is configured")
+        return self
 
 
 _global_settings: Optional[Settings] = None

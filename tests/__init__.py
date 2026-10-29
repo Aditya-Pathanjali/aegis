@@ -1,1 +1,1 @@
-"""Test fakes and doubles for Aegis testing."""
+"""Test package for Aegis."""

@@ -59,7 +59,7 @@ class RAGKnowledgeBase:
         self,
         query: str,
         top_k: int = 4,
-        min_relevance: float = 0.1,
+        min_relevance: float = 0.25,
     ) -> List[RetrievedEvidence]:
         q_emb = self.embeddings.embed_text(query)
         raw_results: List[VectorSearchResult] = self.vector_store.search(

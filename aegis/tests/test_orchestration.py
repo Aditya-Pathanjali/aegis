@@ -2,7 +2,14 @@
 
 import time
 
-from aegis.models.schemas import ApprovalAction, TaskStatus, TaskSubmission
+from aegis.models.schemas import (
+    AgentRole,
+    ApprovalAction,
+    ExecutionPlan,
+    SubTask,
+    TaskStatus,
+    TaskSubmission,
+)
 from aegis.orchestration.graph import AegisOrchestrator
 from aegis.orchestration.state import AegisState
 from aegis.services.orchestrator_service import OrchestratorService
@@ -10,10 +17,29 @@ from tests.fakes import FakeLLM
 
 
 def test_orchestrator_complete_run():
-    orchestrator = AegisOrchestrator(llm_provider=FakeLLM())
+    plan = ExecutionPlan(
+        task_id="test-orch-1",
+        original_query="Evaluate equipment maintenance feasibility.",
+        objective="Assess feasibility using research and data tools.",
+        subtasks=[
+            SubTask(
+                id="subtask-1",
+                title="Literature Research",
+                description="Search literature guidelines",
+                assigned_agent=AgentRole.RESEARCH,
+            ),
+            SubTask(
+                id="subtask-2",
+                title="Data Profiling",
+                description="Analyze telemetry dataset",
+                assigned_agent=AgentRole.DATA_ANALYST,
+            ),
+        ],
+    )
+    orchestrator = AegisOrchestrator(llm_provider=FakeLLM(responses=[plan]))
     initial_state: AegisState = {
         "task_id": "test-orch-1",
-        "query": "Evaluate predictive maintenance feasibility for centrifugal pump using sensor telemetry.",
+        "query": "Evaluate equipment maintenance feasibility.",
         "has_dataset": True,
         "require_human_approval": False,
         "max_retries": 2,
@@ -23,17 +49,29 @@ def test_orchestrator_complete_run():
 
     assert result["status"] == TaskStatus.COMPLETED
     assert result["final_report"] is not None
-    assert result["final_report"].executive_summary.overall_confidence > 0.8
-    assert len(result["specialist_results"]) >= 2
-    assert result["verification_result"] is not None
+    assert len(result["specialist_results"]) == 2
+    assert result["verification_result"].status == "not_implemented"
     assert result["critic_evaluation"].quality_pass is True
 
 
 def test_human_gate_triggering_and_approval():
-    service = OrchestratorService(llm_provider=FakeLLM())
+    plan = ExecutionPlan(
+        task_id="test-gate-1",
+        original_query="Analyze equipment with mandatory sign-off.",
+        objective="Analyze equipment with human review gate.",
+        subtasks=[
+            SubTask(
+                id="subtask-1",
+                title="Literature Research",
+                description="Search literature guidelines",
+                assigned_agent=AgentRole.RESEARCH,
+            )
+        ],
+    )
+    service = OrchestratorService(llm_provider=FakeLLM(responses=[plan]))
     task_id = service.submit_task(
         TaskSubmission(
-            query="Analyze bearing wear with mandatory human sign-off required.",
+            query="Analyze equipment with mandatory sign-off.",
             require_human_approval=True,
             max_retries=1,
         )
@@ -51,12 +89,13 @@ def test_human_gate_triggering_and_approval():
     assert resp.status == TaskStatus.WAITING_APPROVAL
     assert resp.approval_request is not None
     assert resp.approval_request.status == "pending"
+    assert resp.approval_request.proposed_actions == []
 
     # Operator approves
     updated = service.resolve_human_approval(
         task_id=task_id,
         action=ApprovalAction.APPROVE,
-        feedback="Overhaul authorized for next scheduled shift.",
+        feedback="Authorization granted.",
     )
     assert updated.status == TaskStatus.COMPLETED
     assert updated.approval_request.status == "approved"

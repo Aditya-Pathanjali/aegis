@@ -18,7 +18,7 @@ T = TypeVar("T", bound=BaseModel)
 class BaseLLMProvider(ABC):
     """Abstract Base Class for LLM providers."""
 
-    def __init__(self, model: Optional[str] = None, api_key: Optional[str] = None):
+    def __init__(self, model: str, api_key: Optional[str] = None):
         self.model = model
         self.api_key = api_key
 
@@ -48,8 +48,8 @@ class BaseLLMProvider(ABC):
 class OpenAIProvider(BaseLLMProvider):
     """OpenAI API provider."""
 
-    def __init__(self, model: Optional[str] = None, api_key: Optional[str] = None):
-        super().__init__(model=model or "gpt-4o", api_key=api_key or os.getenv("OPENAI_API_KEY"))
+    def __init__(self, model: str, api_key: Optional[str] = None):
+        super().__init__(model=model, api_key=api_key or os.getenv("OPENAI_API_KEY"))
         try:
             from openai import OpenAI
             self.client = OpenAI(api_key=self.api_key)
@@ -124,8 +124,8 @@ class OpenAIProvider(BaseLLMProvider):
 class AnthropicProvider(BaseLLMProvider):
     """Anthropic API provider."""
 
-    def __init__(self, model: Optional[str] = None, api_key: Optional[str] = None):
-        super().__init__(model=model or "claude-3-5-sonnet-20241022", api_key=api_key or os.getenv("ANTHROPIC_API_KEY"))
+    def __init__(self, model: str, api_key: Optional[str] = None):
+        super().__init__(model=model, api_key=api_key or os.getenv("ANTHROPIC_API_KEY"))
 
     def generate_text(
         self,
@@ -179,7 +179,7 @@ class AnthropicProvider(BaseLLMProvider):
 def get_llm_provider(settings: Optional[Settings] = None) -> BaseLLMProvider:
     """
     Factory function to instantiate the configured LLM provider.
-    Selects only from settings. Fails loudly if no provider is configured.
+    Selects only from settings. Fails loudly if no provider or model is configured.
     """
     if settings is None:
         settings = get_settings()
@@ -187,6 +187,10 @@ def get_llm_provider(settings: Optional[Settings] = None) -> BaseLLMProvider:
     if not settings.provider:
         raise RuntimeError(
             "No LLM provider configured. Set AEGIS_PROVIDER to 'anthropic' or 'openai'."
+        )
+    if not settings.model:
+        raise RuntimeError(
+            "No LLM model configured. Set AEGIS_MODEL in environment."
         )
 
     provider = settings.provider.lower()

@@ -4,48 +4,78 @@ from aegis.agents.critic import CriticAgent
 from aegis.agents.data_analyst import DataAnalystAgent
 from aegis.agents.planner import PlannerAgent
 from aegis.agents.research import ResearchAgent
+from aegis.agents.synthesizer import SynthesizerAgent
 from aegis.agents.verification import VerificationAgent
-from aegis.models.schemas import AgentRole, SubTask
+from aegis.models.schemas import (
+    AgentRole,
+    CriticEvaluation,
+    ExecutionPlan,
+    SubTask,
+    VerificationMetrics,
+    VerificationResult,
+)
 from tests.fakes import FakeLLM
 
 
 def test_planner_agent():
-    planner = PlannerAgent(llm_provider=FakeLLM())
+    expected_plan = ExecutionPlan(
+        task_id="plan-1",
+        original_query="Analyse equipment data",
+        objective="Analyze system telemetry and research guidelines",
+        subtasks=[
+            SubTask(
+                id="st-1",
+                title="Engineering Literature Review",
+                description="Review operating guidelines",
+                assigned_agent=AgentRole.RESEARCH,
+            ),
+            SubTask(
+                id="st-2",
+                title="Data Profiling",
+                description="Profile dataset statistics",
+                assigned_agent=AgentRole.DATA_ANALYST,
+            ),
+        ],
+    )
+    fake_llm = FakeLLM(responses=[expected_plan])
+    planner = PlannerAgent(llm_provider=fake_llm)
     plan = planner.execute(
-        query="Analyse whether predictive maintenance would be suitable for this equipment using sensor data.",
+        query="Analyse equipment data",
         has_dataset=True,
     )
-    assert len(plan.subtasks) >= 2
+    assert len(plan.subtasks) == 2
     roles = [st.assigned_agent for st in plan.subtasks]
-    assert AgentRole.RESEARCH in roles or AgentRole.DATA_ANALYST in roles
+    assert AgentRole.RESEARCH in roles
+    assert AgentRole.DATA_ANALYST in roles
 
 
 def test_research_agent():
     researcher = ResearchAgent(llm_provider=FakeLLM())
     st = SubTask(
         id="st-res",
-        title="Turbine Vibration Limits",
-        description="Lookup vibration severity zones",
+        title="Literature Search",
+        description="Lookup engineering guidelines",
         assigned_agent=AgentRole.RESEARCH,
     )
     res = researcher.execute(subtask=st)
-    assert res.confidence_score >= 0.85
-    assert len(res.detailed_findings) > 0
-    assert len(res.tool_calls) == 1
+    assert res.output_summary == "Research agent not implemented yet (PR 5)"
+    assert res.detailed_findings == []
+    assert res.metadata["limitations"] == ["Research agent not implemented yet (PR 5)"]
 
 
 def test_data_analyst_agent():
     analyst = DataAnalystAgent(llm_provider=FakeLLM())
     st = SubTask(
         id="st-data",
-        title="Analyze Sensor Telemetry",
-        description="Compute summary stats and Pearson correlation",
+        title="Data Analysis",
+        description="Compute summary stats",
         assigned_agent=AgentRole.DATA_ANALYST,
     )
     res = analyst.execute(subtask=st)
-    assert res.confidence_score >= 0.90
-    assert len(res.data_tables) >= 2
-    assert any("Correlation" in dt.get("table_name", "") for dt in res.data_tables)
+    assert res.output_summary == "Data analyst agent not implemented yet (PR 5)"
+    assert res.detailed_findings == []
+    assert res.data_tables == []
+    assert res.metadata["limitations"] == ["Data analyst agent not implemented yet (PR 5)"]
 
 
 def test_verification_agent():
@@ -54,10 +84,10 @@ def test_verification_agent():
     res = analyst.execute(
         subtask=SubTask(id="st", title="test", description="test", assigned_agent=AgentRole.DATA_ANALYST)
     )
-    v_res = verifier.execute(specialist_results=[res], original_query="Analyze predictive maintenance")
-    assert v_res.metrics.overall_reliability > 80.0
-    assert v_res.metrics.hallucination_risk < 15.0
-    assert v_res.status in ["passed", "needs_revision"]
+    v_res = verifier.execute(specialist_results=[res], original_query="Analyze equipment")
+    assert v_res.status == "not_implemented"
+    assert v_res.metrics.overall_reliability == 0.0
+    assert v_res.claims == []
 
 
 def test_critic_agent():
@@ -70,4 +100,41 @@ def test_critic_agent():
     v_res = verifier.execute(specialist_results=[res], original_query="Analyze")
     eval_res = critic.execute(specialist_results=[res], verification_result=v_res)
     assert eval_res.quality_pass is True
-    assert eval_res.score >= 8.0
+    assert eval_res.critique_summary == "Critic not implemented yet (PR 6)"
+    assert eval_res.score == 0.0
+
+
+def test_synthesizer_agent():
+    synthesizer = SynthesizerAgent(llm_provider=FakeLLM())
+    report = synthesizer.execute(
+        task_id="t-synth",
+        query="Inspect system",
+        specialist_results=[],
+        verification_result=VerificationResult(
+            status="not_implemented",
+            claims=[],
+            metrics=VerificationMetrics(
+                evidence_coverage=0.0,
+                source_quality=0.0,
+                claim_consistency=0.0,
+                temporal_validity=0.0,
+                hallucination_risk=0.0,
+                overall_reliability=0.0,
+            ),
+            unsupported_claims=[],
+        ),
+        critic_evaluation=CriticEvaluation(
+            quality_pass=True,
+            score=0.0,
+            issues_found=[],
+            missing_evidence=[],
+            weak_reasoning=[],
+            contradictions=[],
+            critique_summary="Critic not implemented yet (PR 6)",
+        ),
+        trace_events=[],
+    )
+    assert report.executive_summary.final_finding == ""
+    assert report.executive_summary.key_conclusions == []
+    assert report.executive_summary.actionable_recommendations == []
+    assert report.limitations == ["Synthesizer agent not implemented yet (PR 5/6)"]
