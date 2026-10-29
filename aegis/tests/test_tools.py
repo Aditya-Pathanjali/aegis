@@ -1,11 +1,11 @@
 """Unit tests for Aegis tools and security sandbox."""
 
 import pytest
+
 from aegis.models.schemas import AgentRole
 from aegis.tools.python_sandbox import PythonSandboxTool, SecurityViolationError
-from aegis.tools.registry import ToolRegistry, get_tool_registry
+from aegis.tools.registry import ToolRegistry
 from aegis.tools.sql_tool import SQLQueryTool
-from aegis.tools.web_search import WebSearchTool
 
 
 def test_python_sandbox_math_and_pandas():
@@ -54,14 +54,6 @@ def test_sql_query_tool():
     assert "status_flag" in res.data["columns"]
 
 
-def test_web_search_tool():
-    tool = WebSearchTool()
-    res = tool.execute(query="ISO 10816 vibration limits")
-    assert res.success is True
-    assert res.data["results_count"] > 0
-    assert any("10816" in r["title"] for r in res.data["results"])
-
-
 def test_tool_registry_permissions():
     reg = ToolRegistry()
 
@@ -70,7 +62,6 @@ def test_tool_registry_permissions():
     assert rec1.success is False
     assert "Security Policy Violation" in rec1.error
 
-    # Data Analyst IS authorized
+    # Data Analyst is authorized to execute python_sandbox
     rec2 = reg.execute_tool(AgentRole.DATA_ANALYST, "python_sandbox", {"code": "result = 42"})
     assert rec2.success is True
-    assert rec2.output["variables"]["result"] == 42

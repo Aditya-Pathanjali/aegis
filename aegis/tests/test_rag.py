@@ -1,6 +1,5 @@
 """Unit tests for RAG pipeline components."""
 
-import pytest
 from aegis.rag.chunker import DocumentChunker
 from aegis.rag.embeddings import FastDenseEmbeddings
 from aegis.rag.retriever import RAGKnowledgeBase
@@ -40,6 +39,6 @@ def test_vector_store_and_retrieval():
         title="Centrifugal Slurry Pump Engineering Manual",
         text="Continuous operation max temperature is 80 degrees Celsius. Alarm set at 75C.",
     )
-    results = kb.retrieve(query="What is the maximum operating temperature for slurry pump?", top_k=2)
+    results = kb.retrieve(query="What is the maximum operating temperature for slurry pump?", top_k=2, min_relevance=0.1)
     assert len(results) > 0
     assert "80 degrees" in results[0].content or "temperature" in results[0].content

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from aegis.models.schemas import AgentRole, TaskStatus
 from aegis.orchestration.state import AegisState
 
 
@@ -42,7 +41,7 @@ def route_human_gate_or_complete(state: AegisState) -> str:
     """
     Evaluates whether human review is mandated due to:
     1. Explicit user configuration (require_human_approval=True)
-    2. Low confidence (< 0.70)
+    2. Low confidence (< 0.75) when confidence is present
     3. Critical / high risk operational actions
     """
     if state.get("require_human_approval", False):
@@ -51,7 +50,7 @@ def route_human_gate_or_complete(state: AegisState) -> str:
     report = state.get("final_report")
     if report:
         conf = report.executive_summary.overall_confidence
-        if conf < 0.75:
+        if conf is not None and conf < 0.75:
             return "human_gate_node"
 
     return "__end__"

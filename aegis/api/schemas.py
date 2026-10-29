@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
+
 from pydantic import BaseModel, Field
-from aegis.models.schemas import ApprovalAction, TaskStatus
+
+from aegis.models.schemas import ApprovalAction
 
 
 class TaskCreateRequest(BaseModel):
@@ -13,9 +15,6 @@ class TaskCreateRequest(BaseModel):
     dataset_content: Optional[str] = None
     require_human_approval: bool = False
     max_retries: int = 2
-    llm_provider: str = "auto"
-    llm_model: Optional[str] = None
-    api_key: Optional[str] = None
 
 
 class ApprovalActionRequest(BaseModel):

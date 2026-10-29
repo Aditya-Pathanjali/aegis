@@ -2,6 +2,7 @@
 
 from aegis.rag.chunker import DocumentChunk, DocumentChunker
 from aegis.rag.embeddings import BaseEmbeddings, FastDenseEmbeddings, OpenAIEmbeddings
+from aegis.rag.retriever import RAGKnowledgeBase, RetrievedEvidence, get_rag_knowledge_base
 from aegis.rag.vector_store import (
     BaseVectorStore,
     InMemoryVectorStore,
@@ -9,7 +10,6 @@ from aegis.rag.vector_store import (
     VectorSearchResult,
     get_vector_store,
 )
-from aegis.rag.retriever import RAGKnowledgeBase, RetrievedEvidence, get_rag_knowledge_base
 
 __all__ = [
     "DocumentChunk",

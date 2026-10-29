@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional
-from datetime import datetime
+from typing import Any, Callable, Dict, Optional
+
 from langgraph.graph import END, START, StateGraph
 
-from aegis.agents.coding import CodingAgent
 from aegis.agents.critic import CriticAgent
 from aegis.agents.data_analyst import DataAnalystAgent
 from aegis.agents.planner import PlannerAgent
@@ -52,7 +51,6 @@ class AegisOrchestrator:
         self.planner_agent = PlannerAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
         self.research_agent = ResearchAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
         self.data_analyst_agent = DataAnalystAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
-        self.coding_agent = CodingAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
         self.verification_agent = VerificationAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
         self.critic_agent = CriticAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
         self.synthesizer_agent = SynthesizerAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
@@ -68,8 +66,8 @@ class AegisOrchestrator:
         message: str,
         details: Optional[Dict[str, Any]] = None,
         duration_ms: float = 0.0,
-        token_usage: int = 150,
-        cost_usd: float = 0.0005,
+        token_usage: int = 0,
+        cost_usd: float = 0.0,
     ) -> TraceEvent:
         event = TraceEvent(
             event_id=str(uuid.uuid4())[:8],
@@ -121,7 +119,7 @@ class AegisOrchestrator:
             message=f"Planner generated structured plan with {len(plan.subtasks)} subtasks.",
             details={"subtasks": [st.title for st in plan.subtasks]},
             duration_ms=duration,
-            token_usage=450,
+            token_usage=0,
         )
 
         state["plan"] = plan
@@ -155,8 +153,6 @@ class AegisOrchestrator:
             result = self.research_agent.execute(subtask=subtask)
         elif agent_role == AgentRole.DATA_ANALYST:
             result = self.data_analyst_agent.execute(subtask=subtask, context={"content": state.get("dataset_content")})
-        elif agent_role == AgentRole.CODING:
-            result = self.coding_agent.execute(subtask=subtask)
         else:
             # Fallback to research
             result = self.research_agent.execute(subtask=subtask)
@@ -185,7 +181,7 @@ class AegisOrchestrator:
             message=f"{agent_role.value.capitalize()} Agent completed: {result.output_summary[:100]}...",
             details={"findings_count": len(result.detailed_findings)},
             duration_ms=duration,
-            token_usage=650,
+            token_usage=0,
         )
 
         state["current_subtask_index"] = idx + 1
@@ -215,7 +211,7 @@ class AegisOrchestrator:
             ),
             details=v_res.metrics.model_dump(),
             duration_ms=duration,
-            token_usage=520,
+            token_usage=0,
         )
 
         state["verification_result"] = v_res
@@ -252,14 +248,13 @@ class AegisOrchestrator:
             message=f"Critic peer review result: {verdict} (Score: {critic_eval.score}/10). {critic_eval.critique_summary[:90]}",
             details=critic_eval.model_dump(),
             duration_ms=duration,
-            token_usage=400,
+            token_usage=0,
         )
 
         state["critic_evaluation"] = critic_eval
         return state
 
     def _retry_node(self, state: AegisState) -> AegisState:
-        t0 = time.perf_counter()
         state["status"] = TaskStatus.RETRYING
         state["retry_count"] = state.get("retry_count", 0) + 1
         critic = state.get("critic_evaluation")
@@ -298,14 +293,16 @@ class AegisOrchestrator:
         )
 
         duration = (time.perf_counter() - t0) * 1000.0
+        conf = report.executive_summary.overall_confidence
+        conf_str = f"{conf * 100:.1f}%" if conf is not None else "N/A"
         self._log_trace(
             state=state,
             agent_role=AgentRole.SYNTHESIZER,
             event_type="agent_finish",
-            message=f"Final Report compiled successfully. Executive confidence: {report.executive_summary.overall_confidence * 100:.1f}%.",
+            message=f"Final Report compiled successfully. Executive confidence: {conf_str}.",
             details={"title": report.title},
             duration_ms=duration,
-            token_usage=800,
+            token_usage=0,
         )
 
         state["final_report"] = report
@@ -314,23 +311,17 @@ class AegisOrchestrator:
 
     def _human_gate_node(self, state: AegisState) -> AegisState:
         report = state.get("final_report")
-        conf = report.executive_summary.overall_confidence if report else 0.88
+        conf = report.executive_summary.overall_confidence if report else None
+        actions = list(report.executive_summary.actionable_recommendations) if report else []
 
         # Create Human Approval Request
         approval_req = HumanApprovalRequest(
             task_id=state["task_id"],
             required=True,
             status="pending",
-            reason=(
-                "Mandatory operational sign-off: Predictive maintenance recommendation advises "
-                "equipment throttling and bearing overhaul within 72 hours."
-            ),
-            risk_level="high" if conf < 0.75 else "medium",
-            proposed_actions=[
-                "Approve scheduled shutdown & bearing overhaul window",
-                "Approve $18,500 maintenance procurement budget",
-                "Authorize automated SCADA trip limits",
-            ],
+            reason="Human approval required before finalizing actions.",
+            risk_level="high" if (conf is not None and conf < 0.75) else "medium",
+            proposed_actions=actions,
         )
 
         state["human_approval"] = approval_req

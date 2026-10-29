@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
+
 from aegis.agents.base import BaseAgent
-from aegis.models.schemas import AgentRole, ExecutionPlan, SubTask
+from aegis.models.schemas import AgentRole, ExecutionPlan
 
 
 class PlannerAgent(BaseAgent):
@@ -38,9 +39,9 @@ class PlannerAgent(BaseAgent):
         system_prompt = (
             "You are the Aegis Lead Architect & Planner Agent. "
             "Decompose the user's complex request into a sequence of atomic, specialized subtasks. "
-            "Available specialist roles: 'research', 'data_analyst', 'coding'. "
+            "Available specialist roles: 'research', 'data_analyst'. "
             "Do NOT include verification or synthesizer in the subtasks as they are dedicated pipeline stages. "
-            "Assign appropriate tools from: web_search, rag_retriever, python_sandbox, sql_query, document_processor."
+            "Assign appropriate tools from: rag_retriever, python_sandbox, sql_query."
         )
 
         plan = self.llm.generate_structured(

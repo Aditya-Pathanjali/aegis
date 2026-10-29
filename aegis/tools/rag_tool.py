@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict
+
 from aegis.rag.retriever import get_rag_knowledge_base
 from aegis.tools.base import BaseTool
 

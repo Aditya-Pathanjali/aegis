@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -64,7 +65,7 @@ class SubTask(BaseModel):
 
 class ExecutionPlan(BaseModel):
     task_id: str
-    original_query: str
+    original_query: str = ""
     objective: str
     subtasks: List[SubTask]
     estimated_complexity: str = "medium"  # low, medium, high
@@ -81,26 +82,26 @@ class AgentExecutionResult(BaseModel):
     data_tables: List[Dict[str, Any]] = Field(default_factory=list)
     tool_calls: List[ToolCallRecord] = Field(default_factory=list)
     execution_time_seconds: float = 0.0
-    confidence_score: float = Field(ge=0.0, le=1.0, default=0.85)
+    confidence_score: Optional[float] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ClaimVerification(BaseModel):
     claim: str
     is_supported: bool
-    confidence: float = Field(ge=0.0, le=1.0, default=0.9)
+    confidence: Optional[float] = None
     evidence_sources: List[str] = Field(default_factory=list)
     contradiction_detected: bool = False
     notes: str = ""
 
 
 class VerificationMetrics(BaseModel):
-    evidence_coverage: float = Field(ge=0.0, le=100.0, default=85.0)
-    source_quality: float = Field(ge=0.0, le=100.0, default=90.0)
-    claim_consistency: float = Field(ge=0.0, le=100.0, default=92.0)
-    temporal_validity: float = Field(ge=0.0, le=100.0, default=95.0)
-    hallucination_risk: float = Field(ge=0.0, le=100.0, default=5.0)
-    overall_reliability: float = Field(ge=0.0, le=100.0, default=89.0)
+    evidence_coverage: float = 0.0
+    source_quality: float = 0.0
+    claim_consistency: float = 0.0
+    temporal_validity: float = 0.0
+    hallucination_risk: float = 0.0
+    overall_reliability: float = 0.0
 
 
 class VerificationResult(BaseModel):
@@ -114,7 +115,7 @@ class VerificationResult(BaseModel):
 
 class CriticEvaluation(BaseModel):
     quality_pass: bool = True
-    score: float = Field(ge=0.0, le=10.0, default=8.5)
+    score: Optional[float] = None
     issues_found: List[str] = Field(default_factory=list)
     missing_evidence: List[str] = Field(default_factory=list)
     weak_reasoning: List[str] = Field(default_factory=list)
@@ -127,7 +128,7 @@ class CriticEvaluation(BaseModel):
 class ExecutiveSummary(BaseModel):
     final_finding: str
     key_conclusions: List[str] = Field(default_factory=list)
-    overall_confidence: float = Field(ge=0.0, le=1.0, default=0.88)
+    overall_confidence: Optional[float] = None
     business_impact: str = ""
     actionable_recommendations: List[str] = Field(default_factory=list)
 
@@ -180,9 +181,6 @@ class TaskSubmission(BaseModel):
     dataset_content: Optional[str] = None  # CSV or JSON raw string
     require_human_approval: bool = False
     max_retries: int = 2
-    llm_provider: str = "auto"  # auto, openai, anthropic, mock
-    llm_model: Optional[str] = None
-    api_key: Optional[str] = None
 
 
 class TaskResponse(BaseModel):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict
+
 from pydantic import BaseModel, Field
 
 from aegis.models.schemas import ToolCallRecord
