@@ -33,3 +33,4 @@ class LLMProvider(Protocol):
     ) -> StructuredResult:
         """Generate schema-constrained structured output validated against a Pydantic model."""
         ...
+

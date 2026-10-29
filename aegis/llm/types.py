@@ -15,6 +15,8 @@ class ToolUseBlock(BaseModel):
     id: str
     name: str
     arguments: Dict[str, Any] = Field(default_factory=dict)
+    raw_arguments: Optional[str] = None
+    parse_error: Optional[str] = None
 
 
 class ToolResultBlock(BaseModel):
@@ -62,3 +64,4 @@ class StructuredResult(BaseModel):
     latency_ms: float = 0.0
     attempts: int = 1
     cost_usd: Optional[float] = None
+

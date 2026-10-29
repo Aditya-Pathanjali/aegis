@@ -39,3 +39,4 @@ def get_llm_provider(settings: Optional[Settings] = None) -> LLMProvider:
         return OpenAIProvider(model=cfg.model, api_key=api_key, settings=cfg)
 
     raise LLMNotConfiguredError(f"Unsupported LLM provider '{cfg.provider}'. Must be 'anthropic' or 'openai'.")
+
