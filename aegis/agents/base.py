@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
-from aegis.models.llm_provider import BaseLLMProvider, get_llm_provider
+from aegis.llm import LLMProvider, get_llm_provider
 from aegis.models.schemas import AgentRole, ToolCallRecord
 from aegis.tools.registry import ToolRegistry, get_tool_registry
 
@@ -16,7 +16,7 @@ class BaseAgent(ABC):
     def __init__(
         self,
         role: AgentRole,
-        llm_provider: Optional[BaseLLMProvider] = None,
+        llm_provider: Optional[LLMProvider] = None,
         tool_registry: Optional[ToolRegistry] = None,
     ):
         self.role = role

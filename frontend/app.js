@@ -346,7 +346,7 @@ function renderExecutiveReport(report) {
         </div>
       </div>
       <div class="confidence-gauge-box">
-        <div class="confidence-val">${(exec.overall_confidence * 100).toFixed(0)}%</div>
+        <div class="confidence-val">${exec.overall_confidence != null ? `${(exec.overall_confidence * 100).toFixed(0)}%` : 'N/A'}</div>
         <div class="confidence-label">Executive Confidence</div>
       </div>
     </div>
@@ -377,9 +377,14 @@ function renderExecutiveReport(report) {
     <div class="card glass-card">
       <div class="card-header">
         <div class="card-title">2. Verification Agent Reliability Audit</div>
-        <span class="badge badge-info">Zero Hallucination Protocol</span>
+        <span class="badge ${ver.status === 'not_implemented' ? 'badge-warning' : 'badge-info'}">${ver.status === 'not_implemented' ? 'Not Implemented' : 'Zero Hallucination Protocol'}</span>
       </div>
       <div class="card-body">
+        ${ver.status === 'not_implemented' ? `
+          <div style="padding: 2rem 1rem; text-align: center; color: #94a3b8; font-size: 1rem; font-style: italic;">
+            Not implemented yet
+          </div>
+        ` : `
         <div class="reliability-grid">
           <div class="gauge-item">
             <div class="gauge-num text-cyan">${metrics.evidence_coverage}%</div>
@@ -406,6 +411,7 @@ function renderExecutiveReport(report) {
             <div class="gauge-label" style="color: #fff; font-weight: 700;">Overall Reliability</div>
           </div>
         </div>
+        `}
 
         <p style="font-size: 0.85rem; color: #94a3b8; margin-top: 0.75rem;">${escapeHtml(ver.audit_notes)}</p>
       </div>
@@ -594,12 +600,14 @@ ${currentTaskReport.executive_summary.key_conclusions.map(c => `- ${c}`).join('\
 ${currentTaskReport.executive_summary.business_impact}
 
 ## 2. Verification Reliability
+${currentTaskReport.verification_section.status === 'not_implemented' ? 'Not implemented yet' : `
 - Evidence Coverage: ${currentTaskReport.verification_section.metrics.evidence_coverage}%
 - Source Quality: ${currentTaskReport.verification_section.metrics.source_quality}%
 - Claim Consistency: ${currentTaskReport.verification_section.metrics.claim_consistency}%
 - Temporal Validity: ${currentTaskReport.verification_section.metrics.temporal_validity}%
 - Hallucination Risk: ${currentTaskReport.verification_section.metrics.hallucination_risk}%
 - Overall Reliability: ${currentTaskReport.verification_section.metrics.overall_reliability}%
+`}
 
 ## 3. Audited Claims
 ${currentTaskReport.verification_section.claims.map(c => `- **Claim**: ${c.claim}\n  - Supported: ${c.is_supported} (Confidence: ${(c.confidence * 100).toFixed(0)}%)\n  - Sources: ${c.evidence_sources.join(', ')}`).join('\n')}

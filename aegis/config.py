@@ -61,6 +61,22 @@ class Settings(BaseSettings):
         default=384,
         description="Embedding vector dimensions.",
     )
+    llm_max_output_tokens: int = Field(
+        default=4096,
+        description="Default maximum output tokens for LLM generation.",
+    )
+    llm_max_retries: int = Field(
+        default=3,
+        description="Maximum SDK retries for transient errors.",
+    )
+    llm_timeout_s: float = Field(
+        default=60.0,
+        description="Timeout in seconds for LLM SDK requests.",
+    )
+    pricing_file: str = Field(
+        default="aegis/config/pricing.yaml",
+        description="Path to YAML file mapping models to per-million token pricing.",
+    )
 
     @model_validator(mode="after")
     def validate_provider_and_model(self) -> Settings:

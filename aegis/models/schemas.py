@@ -82,14 +82,14 @@ class AgentExecutionResult(BaseModel):
     data_tables: List[Dict[str, Any]] = Field(default_factory=list)
     tool_calls: List[ToolCallRecord] = Field(default_factory=list)
     execution_time_seconds: float = 0.0
-    confidence_score: Optional[float] = None
+    confidence_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ClaimVerification(BaseModel):
     claim: str
     is_supported: bool
-    confidence: Optional[float] = None
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     evidence_sources: List[str] = Field(default_factory=list)
     contradiction_detected: bool = False
     notes: str = ""
@@ -115,7 +115,7 @@ class VerificationResult(BaseModel):
 
 class CriticEvaluation(BaseModel):
     quality_pass: bool = True
-    score: Optional[float] = None
+    score: Optional[float] = Field(default=None, ge=0.0, le=10.0)
     issues_found: List[str] = Field(default_factory=list)
     missing_evidence: List[str] = Field(default_factory=list)
     weak_reasoning: List[str] = Field(default_factory=list)
@@ -128,7 +128,7 @@ class CriticEvaluation(BaseModel):
 class ExecutiveSummary(BaseModel):
     final_finding: str
     key_conclusions: List[str] = Field(default_factory=list)
-    overall_confidence: Optional[float] = None
+    overall_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     business_impact: str = ""
     actionable_recommendations: List[str] = Field(default_factory=list)
 
@@ -143,7 +143,10 @@ class TraceEvent(BaseModel):
     details: Dict[str, Any] = Field(default_factory=dict)
     duration_ms: float = 0.0
     token_usage: int = 0
-    estimated_cost_usd: float = 0.0
+    estimated_cost_usd: Optional[float] = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    model: Optional[str] = None
 
 
 class FinalReport(BaseModel):
@@ -159,7 +162,7 @@ class FinalReport(BaseModel):
     limitations: List[str] = Field(default_factory=list)
     total_execution_time_seconds: float = 0.0
     total_tokens: int = 0
-    total_cost_usd: float = 0.0
+    total_cost_usd: Optional[float] = 0.0
     retries_count: int = 0
     created_at: datetime = Field(default_factory=datetime.utcnow)
 

@@ -7,9 +7,9 @@ import uuid
 from datetime import datetime
 from typing import Callable, Dict, List, Optional
 
+from aegis.llm import LLMProvider, get_llm_provider
 from aegis.memory.state_store import TaskStateStore, get_state_store
 from aegis.memory.trace_logger import TraceLogger, get_trace_logger
-from aegis.models.llm_provider import BaseLLMProvider, get_llm_provider
 from aegis.models.schemas import (
     ApprovalAction,
     HumanApprovalRequest,
@@ -30,7 +30,7 @@ class OrchestratorService:
         self,
         state_store: Optional[TaskStateStore] = None,
         trace_logger: Optional[TraceLogger] = None,
-        llm_provider: Optional[BaseLLMProvider] = None,
+        llm_provider: Optional[LLMProvider] = None,
     ):
         self.state_store = state_store or get_state_store()
         self.trace_logger = trace_logger or get_trace_logger()
@@ -137,7 +137,7 @@ class OrchestratorService:
         if action == ApprovalAction.APPROVE:
             req.status = "approved"
             state["status"] = TaskStatus.COMPLETED
-            msg = "Operator APPROVED the AI predictive maintenance recommendation."
+            msg = "Operator APPROVED the AI recommendation."
         elif action == ApprovalAction.REJECT:
             req.status = "rejected"
             state["status"] = TaskStatus.REJECTED

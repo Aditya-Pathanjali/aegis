@@ -1,0 +1,8 @@
+# Pricing mapping: filled from provider pricing pages.
+# Format:
+#   <model_id>:
+#     input_per_mtok_usd: float
+#     output_per_mtok_usd: float
+#     source_url: str
+#     checked_on: str (YYYY-MM-DD)
+{}
