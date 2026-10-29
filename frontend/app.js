@@ -66,20 +66,12 @@ function capitalize(s) {
 }
 
 // 2. Configuration Modal
-btnOpenConfig.addEventListener('click', () => configModal.classList.remove('hidden'));
-btnCloseConfig.addEventListener('click', () => configModal.classList.add('hidden'));
-btnSaveConfig.addEventListener('click', () => {
-  localStorage.setItem('aegis_provider', cfgProvider.value);
-  localStorage.setItem('aegis_api_key', cfgApiKey.value);
-  configModal.classList.add('hidden');
-});
-
-// Load stored config
-if (localStorage.getItem('aegis_provider')) {
-  cfgProvider.value = localStorage.getItem('aegis_provider');
-}
-if (localStorage.getItem('aegis_api_key')) {
-  cfgApiKey.value = localStorage.getItem('aegis_api_key');
+if (btnOpenConfig) btnOpenConfig.addEventListener('click', () => configModal.classList.remove('hidden'));
+if (btnCloseConfig) btnCloseConfig.addEventListener('click', () => configModal.classList.add('hidden'));
+if (btnSaveConfig) {
+  btnSaveConfig.addEventListener('click', () => {
+    configModal.classList.add('hidden');
+  });
 }
 
 // 3. Load Sample Sensor Telemetry
@@ -115,8 +107,6 @@ btnLaunchTask.addEventListener('click', async () => {
     dataset_content: currentDataset ? currentDataset.csv_content : null,
     require_human_approval: chkHumanGate.checked,
     max_retries: parseInt(selMaxRetries.value, 10),
-    llm_provider: cfgProvider.value,
-    api_key: cfgApiKey.value || null,
   };
 
   try {
@@ -125,6 +115,11 @@ btnLaunchTask.addEventListener('click', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      const msg = errData.detail || `Server returned ${resp.status}`;
+      throw new Error(msg);
+    }
     const resData = await resp.json();
     activeTaskId = resData.task_id;
     listenToTraceEvents(activeTaskId);
@@ -132,6 +127,7 @@ btnLaunchTask.addEventListener('click', async () => {
     btnLaunchTask.disabled = false;
     btnLaunchTask.innerHTML = `Launch Autonomous Orchestration`;
     dagStatusBadge.innerText = 'Error Launching';
+    alert(`Failed to launch task: ${err.message}`);
     console.error('Error submitting task', err);
   }
 });

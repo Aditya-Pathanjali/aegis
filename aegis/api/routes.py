@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException, Query
+from typing import Dict, List
+
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from aegis.api.schemas import (
@@ -15,9 +16,9 @@ from aegis.api.schemas import (
     RAGSearchRequest,
     TaskCreateRequest,
 )
+from aegis.config import get_settings
 from aegis.models.schemas import TaskResponse, TaskSubmission, TraceEvent
 from aegis.rag.retriever import get_rag_knowledge_base
-from aegis.services.evaluation_service import get_evaluation_service
 from aegis.services.orchestrator_service import get_orchestrator_service
 
 router = APIRouter(prefix="/api")
@@ -47,7 +48,6 @@ def health_check():
             "PlannerAgent",
             "ResearchAgent",
             "DataAnalystAgent",
-            "CodingAgent",
             "VerificationAgent",
             "CriticAgent",
             "SynthesizerAgent",
@@ -68,6 +68,12 @@ def get_sample_telemetry():
 @router.post("/tasks", response_model=Dict[str, str])
 def submit_task(req: TaskCreateRequest):
     """Submits a new complex task for autonomous multi-agent decomposition and execution."""
+    settings = get_settings()
+    if not settings.provider:
+        raise HTTPException(
+            status_code=503,
+            detail="No LLM provider configured. Set AEGIS_PROVIDER to 'anthropic' or 'openai'.",
+        )
     service = get_orchestrator_service()
     task_id = service.submit_task(
         TaskSubmission(
@@ -76,9 +82,6 @@ def submit_task(req: TaskCreateRequest):
             dataset_content=req.dataset_content,
             require_human_approval=req.require_human_approval,
             max_retries=req.max_retries,
-            llm_provider=req.llm_provider,
-            llm_model=req.llm_model,
-            api_key=req.api_key,
         )
     )
     return {"task_id": task_id, "status": "submitted"}
@@ -188,15 +191,12 @@ def search_rag(req: RAGSearchRequest):
     return [r.model_dump() for r in results]
 
 
-# Evaluation Benchmark Endpoints
+# Evaluation Benchmark Endpoints (Phase 3)
 @router.post("/evaluation/run")
 def run_evaluation():
-    eval_service = get_evaluation_service()
-    report = eval_service.run_benchmark()
-    return report
+    raise HTTPException(status_code=501, detail="Phase 3")
 
 
 @router.get("/evaluation/results")
 def get_evaluation_results():
-    eval_service = get_evaluation_service()
-    return eval_service.get_latest_report()
+    raise HTTPException(status_code=501, detail="Phase 3")

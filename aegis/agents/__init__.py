@@ -1,7 +1,6 @@
 """Aegis Agents package."""
 
 from aegis.agents.base import BaseAgent
-from aegis.agents.coding import CodingAgent
 from aegis.agents.critic import CriticAgent
 from aegis.agents.data_analyst import DataAnalystAgent
 from aegis.agents.planner import PlannerAgent
@@ -14,7 +13,6 @@ __all__ = [
     "PlannerAgent",
     "ResearchAgent",
     "DataAnalystAgent",
-    "CodingAgent",
     "VerificationAgent",
     "CriticAgent",
     "SynthesizerAgent",

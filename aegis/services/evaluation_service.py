@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Optional
+
 from aegis.evaluation.metrics import BenchmarkComparisonReport
 from aegis.evaluation.runner import EvaluationRunner
 

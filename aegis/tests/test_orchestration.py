@@ -1,14 +1,16 @@
 """Integration tests for LangGraph state machine orchestration and human review gates."""
 
-import pytest
+import time
+
 from aegis.models.schemas import ApprovalAction, TaskStatus, TaskSubmission
 from aegis.orchestration.graph import AegisOrchestrator
 from aegis.orchestration.state import AegisState
 from aegis.services.orchestrator_service import OrchestratorService
+from tests.fakes import FakeLLM
 
 
 def test_orchestrator_complete_run():
-    orchestrator = AegisOrchestrator()
+    orchestrator = AegisOrchestrator(llm_provider=FakeLLM())
     initial_state: AegisState = {
         "task_id": "test-orch-1",
         "query": "Evaluate predictive maintenance feasibility for centrifugal pump using sensor telemetry.",
@@ -28,7 +30,7 @@ def test_orchestrator_complete_run():
 
 
 def test_human_gate_triggering_and_approval():
-    service = OrchestratorService()
+    service = OrchestratorService(llm_provider=FakeLLM())
     task_id = service.submit_task(
         TaskSubmission(
             query="Analyze bearing wear with mandatory human sign-off required.",
@@ -37,7 +39,6 @@ def test_human_gate_triggering_and_approval():
         )
     )
 
-    import time
     # Poll briefly for task to reach waiting_approval
     for _ in range(30):
         resp = service.state_store.get_response(task_id)

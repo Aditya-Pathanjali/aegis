@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+
 from aegis.models.schemas import AgentRole, ToolCallRecord
 from aegis.tools.base import BaseTool, ToolResult
-from aegis.tools.file_processor import DocumentProcessorTool
 from aegis.tools.python_sandbox import PythonSandboxTool
 from aegis.tools.rag_tool import RAGRetrieverTool
-from aegis.tools.rest_api import GitHubTool, RestApiTool
 from aegis.tools.sql_tool import SQLQueryTool
-from aegis.tools.web_search import WebSearchTool
 
 
 class UnauthorizedToolAccessError(PermissionError):
@@ -27,10 +25,9 @@ class ToolRegistry:
     # Explicit role-based permissions matrix
     ROLE_PERMISSIONS: Dict[AgentRole, List[str]] = {
         AgentRole.PLANNER: [],  # Planner only reasons & plans; no tool execution
-        AgentRole.RESEARCH: ["web_search", "rag_retriever", "document_processor", "rest_api"],
-        AgentRole.DATA_ANALYST: ["python_sandbox", "sql_query", "document_processor"],
-        AgentRole.CODING: ["python_sandbox", "rest_api", "github_tool", "document_processor"],
-        AgentRole.VERIFICATION: ["rag_retriever", "web_search", "python_sandbox"],
+        AgentRole.RESEARCH: ["rag_retriever"],
+        AgentRole.DATA_ANALYST: ["python_sandbox", "sql_query"],
+        AgentRole.VERIFICATION: ["rag_retriever", "python_sandbox"],
         AgentRole.CRITIC: ["rag_retriever"],
         AgentRole.SYNTHESIZER: [],  # Synthesizer only compiles validated outputs
     }
@@ -40,13 +37,9 @@ class ToolRegistry:
         self._register_default_tools()
 
     def _register_default_tools(self) -> None:
-        self.register(WebSearchTool())
         self.register(RAGRetrieverTool())
         self.register(PythonSandboxTool())
         self.register(SQLQueryTool())
-        self.register(DocumentProcessorTool())
-        self.register(RestApiTool())
-        self.register(GitHubTool())
 
     def register(self, tool: BaseTool) -> None:
         self._tools[tool.name] = tool

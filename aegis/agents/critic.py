@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import List
+
 from aegis.agents.base import BaseAgent
 from aegis.models.schemas import (
     AgentExecutionResult,
@@ -56,7 +57,7 @@ class CriticAgent(BaseAgent):
             weak_reasoning=[],
             contradictions=[],
             critique_summary=(
-                "All specialist conclusions demonstrate high internal consistency and alignment with ISO 10816 standards. "
+                "All specialist conclusions demonstrate high internal consistency and alignment with engineering standards. "
                 "Sensor data correlations support the exponential wear model. Quality criteria fully satisfied."
             ),
             retry_recommendations=None,

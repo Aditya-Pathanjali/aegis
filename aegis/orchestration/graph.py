@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional
-from datetime import datetime
+from typing import Any, Callable, Dict, Optional
+
 from langgraph.graph import END, START, StateGraph
 
-from aegis.agents.coding import CodingAgent
 from aegis.agents.critic import CriticAgent
 from aegis.agents.data_analyst import DataAnalystAgent
 from aegis.agents.planner import PlannerAgent
@@ -52,7 +51,6 @@ class AegisOrchestrator:
         self.planner_agent = PlannerAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
         self.research_agent = ResearchAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
         self.data_analyst_agent = DataAnalystAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
-        self.coding_agent = CodingAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
         self.verification_agent = VerificationAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
         self.critic_agent = CriticAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
         self.synthesizer_agent = SynthesizerAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
@@ -155,8 +153,6 @@ class AegisOrchestrator:
             result = self.research_agent.execute(subtask=subtask)
         elif agent_role == AgentRole.DATA_ANALYST:
             result = self.data_analyst_agent.execute(subtask=subtask, context={"content": state.get("dataset_content")})
-        elif agent_role == AgentRole.CODING:
-            result = self.coding_agent.execute(subtask=subtask)
         else:
             # Fallback to research
             result = self.research_agent.execute(subtask=subtask)
@@ -259,7 +255,6 @@ class AegisOrchestrator:
         return state
 
     def _retry_node(self, state: AegisState) -> AegisState:
-        t0 = time.perf_counter()
         state["status"] = TaskStatus.RETRYING
         state["retry_count"] = state.get("retry_count", 0) + 1
         critic = state.get("critic_evaluation")
@@ -328,7 +323,7 @@ class AegisOrchestrator:
             risk_level="high" if conf < 0.75 else "medium",
             proposed_actions=[
                 "Approve scheduled shutdown & bearing overhaul window",
-                "Approve $18,500 maintenance procurement budget",
+                "Approve maintenance procurement budget",
                 "Authorize automated SCADA trip limits",
             ],
         )

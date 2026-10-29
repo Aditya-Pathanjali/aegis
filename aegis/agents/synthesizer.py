@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
+
 from aegis.agents.base import BaseAgent
 from aegis.models.schemas import (
     AgentExecutionResult,
@@ -53,7 +54,7 @@ class SynthesizerAgent(BaseAgent):
             "claims": evidence_claims,
             "total_claims_audited": len(evidence_claims),
             "sources_consulted": [
-                "ISO 10816-3 Mechanical Vibration Standards",
+                "Mechanical Vibration Standards",
                 "US Department of Energy O&M Review",
                 "Journal of Tribology & Reliability Engineering",
                 "Industrial Telemetry SCADA Store",
@@ -68,14 +69,11 @@ class SynthesizerAgent(BaseAgent):
         for res in specialist_results:
             if res.agent_role == AgentRole.DATA_ANALYST:
                 data_tables.extend(res.data_tables)
-            elif res.agent_role == AgentRole.CODING:
-                code_blocks.extend(res.code_snippets)
-                quantitative_metrics.update(res.metadata)
 
         data_analysis_section = {
             "title": "Quantitative Sensor Telemetry & Degradation Dynamics",
             "findings": [
-                "Vibration RMS escalated from 1.2 mm/s baseline to 5.2 mm/s peak (Zone D alert).",
+                "Vibration RMS escalated from 1.2 mm/s baseline to 5.2 mm/s peak (Critical alert).",
                 "Pearson correlation r = 0.994 confirms severe thermal-vibrational coupling.",
                 "Estimated Remaining Useful Life (RUL) before catastrophic lockup is 4.8 operational days.",
             ],
@@ -94,7 +92,7 @@ class SynthesizerAgent(BaseAgent):
                 "3. Permanently mount dual tri-axial accelerometers (10 kHz bandwidth) on motor outboard bearing housing.",
                 "4. Configure SCADA automated alarms at 2.8 mm/s (Alert) and 4.5 mm/s (Auto-Trip).",
             ],
-            "economic_roi": "Projected net savings of $180,000 against catastrophic pump housing destruction.",
+            "economic_roi": "Projected significant net savings against catastrophic pump housing destruction.",
         }
 
         # Limitations
@@ -108,9 +106,9 @@ class SynthesizerAgent(BaseAgent):
         exec_summary = ExecutiveSummary(
             final_finding="Predictive maintenance is technically urgent, empirically justified, and highly feasible for this equipment.",
             key_conclusions=[
-                "Sensor telemetry exhibits unmistakable bearing degradation entering ISO 10816 Zone D (Critical).",
+                "Sensor telemetry exhibits unmistakable bearing degradation entering Critical Zone.",
                 "RUL algorithmic modeling projects catastrophic mechanical failure within 4.8 operating days.",
-                "Transitioning from reactive overhaul to automated condition monitoring saves approximately $180,000 in downtime.",
+                "Transitioning from reactive overhaul to automated condition monitoring saves substantial downtime costs.",
             ],
             overall_confidence=round(verification_result.metrics.overall_reliability / 100.0, 2),
             business_impact="Eliminates risk of catastrophic shaft seizure, preserves motor stator integrity, and cuts downtime by 42%.",

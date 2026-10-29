@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import threading
 import uuid
-from typing import Any, Callable, Dict, List, Optional
 from datetime import datetime
+from typing import Callable, Dict, List, Optional
 
 from aegis.memory.state_store import TaskStateStore, get_state_store
 from aegis.memory.trace_logger import TraceLogger, get_trace_logger
-from aegis.models.llm_provider import get_llm_provider
+from aegis.models.llm_provider import BaseLLMProvider, get_llm_provider
 from aegis.models.schemas import (
     ApprovalAction,
     HumanApprovalRequest,
@@ -22,7 +21,6 @@ from aegis.models.schemas import (
 from aegis.orchestration.graph import AegisOrchestrator
 from aegis.orchestration.state import AegisState
 from aegis.tools.registry import get_tool_registry
-from aegis.tools.sql_tool import SQLQueryTool
 
 
 class OrchestratorService:
@@ -32,9 +30,11 @@ class OrchestratorService:
         self,
         state_store: Optional[TaskStateStore] = None,
         trace_logger: Optional[TraceLogger] = None,
+        llm_provider: Optional[BaseLLMProvider] = None,
     ):
         self.state_store = state_store or get_state_store()
         self.trace_logger = trace_logger or get_trace_logger()
+        self.llm = llm_provider
         self._subscribers: Dict[str, List[Callable[[TraceEvent], None]]] = {}
 
     def subscribe(self, task_id: str, callback: Callable[[TraceEvent], None]) -> None:
@@ -91,11 +91,7 @@ class OrchestratorService:
         submission: TaskSubmission,
     ) -> None:
         try:
-            llm = get_llm_provider(
-                provider_name=submission.llm_provider,
-                model=submission.llm_model,
-                api_key=submission.api_key,
-            )
+            llm = self.llm or get_llm_provider()
 
             orchestrator = AegisOrchestrator(
                 llm_provider=llm,

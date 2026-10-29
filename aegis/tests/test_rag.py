@@ -1,6 +1,5 @@
 """Unit tests for RAG pipeline components."""
 
-import pytest
 from aegis.rag.chunker import DocumentChunker
 from aegis.rag.embeddings import FastDenseEmbeddings
 from aegis.rag.retriever import RAGKnowledgeBase

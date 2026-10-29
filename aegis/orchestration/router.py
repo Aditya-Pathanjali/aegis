@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from aegis.models.schemas import AgentRole, TaskStatus
 from aegis.orchestration.state import AegisState
 
 

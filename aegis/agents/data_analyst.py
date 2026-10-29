@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from typing import Any, Dict, List, Optional
+
 from aegis.agents.base import BaseAgent
 from aegis.models.schemas import AgentExecutionResult, AgentRole, SubTask, ToolCallRecord
 
@@ -20,7 +21,6 @@ class DataAnalystAgent(BaseAgent):
     def execute(self, subtask: SubTask, context: Optional[Dict[str, Any]] = None) -> AgentExecutionResult:
         start_time = time.perf_counter()
         tool_records: List[ToolCallRecord] = []
-        ctx = context or {}
 
         # 1. SQL Query for high-level aggregate trends
         sql_call = self.call_tool(
@@ -63,13 +63,13 @@ corr = df.corr().to_dict()
 delta_vib = np.gradient(vib_x)
 vib_acceleration = float(np.mean(delta_vib))
 
-# Threshold violation percentage against ISO 10816 Zone C (2.8 mm/s)
+# Threshold violation percentage against warning threshold (2.8 mm/s)
 violations = int((df['vibration_x'] > 2.8).sum())
 violation_pct = float(violations / len(df) * 100)
 
 print(f"Mean Vib: {df['vibration_x'].mean():.2f} mm/s | Max: {df['vibration_x'].max():.2f} mm/s")
 print(f"Vibration-Temperature Pearson Correlation: {df['vibration_x'].corr(df['temperature_c']):.4f}")
-print(f"Zone C Threshold Violations: {violations}/{len(df)} ({violation_pct:.1f}%)")
+print(f"Warning Threshold Violations: {violations}/{len(df)} ({violation_pct:.1f}%)")
 """
         py_call = self.call_tool("python_sandbox", {"code": analysis_code})
         tool_records.append(py_call)
@@ -79,7 +79,7 @@ print(f"Zone C Threshold Violations: {violations}/{len(df)} ({violation_pct:.1f}
         stdout = py_call.output.get("stdout", "") if py_call.output else ""
 
         findings = [
-            "Vibration RMS escalated from baseline 1.2 mm/s to 5.2 mm/s, exceeding ISO 10816 Zone D critical threshold (> 4.5 mm/s).",
+            "Vibration RMS escalated from baseline 1.2 mm/s to 5.2 mm/s, exceeding critical threshold (> 4.5 mm/s).",
             "Strong positive Pearson correlation (r = 0.994) between vibration magnitude and bearing temperature (rising to 84.3°C).",
             "60.0% of recent operating cycles violate the continuous operation threshold (Zone C/D boundary).",
             "Slight speed reduction (1495 RPM down to 1475 RPM) indicates increased rotational drag due to mechanical bearing friction.",

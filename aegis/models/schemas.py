@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -64,7 +65,7 @@ class SubTask(BaseModel):
 
 class ExecutionPlan(BaseModel):
     task_id: str
-    original_query: str
+    original_query: str = ""
     objective: str
     subtasks: List[SubTask]
     estimated_complexity: str = "medium"  # low, medium, high
@@ -180,9 +181,6 @@ class TaskSubmission(BaseModel):
     dataset_content: Optional[str] = None  # CSV or JSON raw string
     require_human_approval: bool = False
     max_retries: int = 2
-    llm_provider: str = "auto"  # auto, openai, anthropic, mock
-    llm_model: Optional[str] = None
-    api_key: Optional[str] = None
 
 
 class TaskResponse(BaseModel):
