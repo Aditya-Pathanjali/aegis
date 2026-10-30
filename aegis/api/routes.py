@@ -7,7 +7,7 @@ import io
 import json
 import queue
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Request, Response, status
@@ -117,22 +117,24 @@ async def submit_task(request: Request):
 
     content_type = request.headers.get("content-type", "")
     query = ""
-    dataset_name = None
-    dataset_content = None
+    dataset_name: Optional[str] = None
+    dataset_content: Optional[str] = None
     require_human_approval = False
     max_retries = 2
 
     if "multipart/form-data" in content_type:
         form = await request.form()
         query = str(form.get("query", ""))
-        dataset_name = form.get("dataset_name")
+        raw_ds_name = form.get("dataset_name")
+        if isinstance(raw_ds_name, str):
+            dataset_name = raw_ds_name
         req_app = form.get("require_human_approval", False)
         if isinstance(req_app, str):
             require_human_approval = req_app.lower() in ("true", "1")
         else:
             require_human_approval = bool(req_app)
         m_retries = form.get("max_retries")
-        if m_retries is not None:
+        if isinstance(m_retries, str):
             try:
                 max_retries = int(m_retries)
             except ValueError:
@@ -141,7 +143,7 @@ async def submit_task(request: Request):
         file = form.get("file")
         if file is not None and hasattr(file, "read"):
             file_bytes = await file.read()
-            if not dataset_name and hasattr(file, "filename"):
+            if not dataset_name and hasattr(file, "filename") and isinstance(file.filename, str):
                 dataset_name = file.filename
             if file_bytes:
                 dataset_content = _process_dataset_bytes(file_bytes, settings)
@@ -154,7 +156,9 @@ async def submit_task(request: Request):
         except Exception as e:
             raise HTTPException(status_code=422, detail=f"Invalid JSON request body: {e}")
         query = body.get("query", "")
-        dataset_name = body.get("dataset_name")
+        raw_ds_name = body.get("dataset_name")
+        if isinstance(raw_ds_name, str):
+            dataset_name = raw_ds_name
         raw_content = body.get("dataset_content")
         require_human_approval = body.get("require_human_approval", False)
         max_retries = body.get("max_retries", 2)

@@ -144,9 +144,9 @@ class PlannerAgent(BaseAgent):
                 SubTask(
                     id=ps.id,
                     description=ps.description,
-                    role=ps.role,
-                    tools=list(ps.tools),
-                    depends_on=list(ps.depends_on),
+                    assigned_agent=AgentRole(ps.role.value),
+                    required_tools=list(ps.tools),
+                    dependencies=list(ps.depends_on),
                     title=ps.description,
                     status="pending",
                 )

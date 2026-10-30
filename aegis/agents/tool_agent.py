@@ -173,10 +173,12 @@ def run_tool_agent(
                     if not isinstance(rec.output, str)
                     else rec.output
                 )
+                # The model never sees provider call IDs unless we print them; without
+                # this it invents IDs like "sql_query_1" and every citation is dropped.
                 tool_result_blocks.append(
                     ToolResultBlock(
                         tool_call_id=call_id,
-                        content=payload_str,
+                        content=f"[evidence_id: {call_id}]\n{payload_str}",
                         is_error=False,
                     )
                 )
@@ -195,9 +197,14 @@ def run_tool_agent(
         step_limit_hit = True
 
     # Conclude with structured schema output
+    tool_names_by_id = {rec.call_id: rec.tool_name for rec in all_tool_records if rec.call_id}
+    valid_id_lines = [f"- tool_call {cid} ({tool_names_by_id.get(cid, 'tool')})" for cid in sorted(produced_tool_ids)]
+    valid_id_lines += [f"- chunk {cid}" for cid in sorted(produced_chunk_ids)]
     instruction_text = (
         "Please compile your final findings into the structured SpecialistOutput schema. "
-        "Ensure each finding cites valid chunk or tool_call evidence references."
+        "Each finding must cite evidence by copying an ID exactly from this list "
+        "(kind, then ref_id); any other ID is discarded:\n"
+        + ("\n".join(valid_id_lines) if valid_id_lines else "- (none: no tool call succeeded, so findings cannot cite evidence)")
     )
     if messages[-1].role == "user":
         messages[-1].content.append(TextBlock(text=instruction_text))

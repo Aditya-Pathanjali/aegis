@@ -29,7 +29,8 @@ if TYPE_CHECKING:
 def extract_numbers(text: str) -> List[float]:
     """Extracts all int and float numbers from text, including negatives and scientific notation."""
     pattern = r"(?<![A-Za-z0-9_])[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?(?![A-Za-z0-9_])"
-    matches = re.findall(pattern, text)
+    # LLMs often write the typographic minus (U+2212); without this "−14.9" parses as +14.9.
+    matches = re.findall(pattern, text.replace("−", "-"))
     numbers: List[float] = []
     for m in matches:
         try:
@@ -96,7 +97,11 @@ class VerificationAgent(BaseAgent):
                 tc = tool_by_call_id.get(ref_id)
                 if tc and tc.output is not None:
                     out_str = json.dumps(tc.output) if isinstance(tc.output, (dict, list)) else str(tc.output)
-                    resolved_texts.append(out_str)
+                    # The call's own arguments (SQL, Python code) are evidence too: parameters such
+                    # as "unit_number = 1" or a 10% window appear there, not in the printed output.
+                    resolved_texts.append(
+                        f"Tool call {tc.tool_name} arguments: {json.dumps(tc.arguments)}\nOutput: {out_str}"
+                    )
                     sources.append(ref_id)
             elif ref.kind == "chunk":
                 chunk_found = False
@@ -129,21 +134,14 @@ class VerificationAgent(BaseAgent):
 
     def _get_judge_llm(self) -> tuple[LLMProvider, str]:
         """Returns (LLMProvider, model_name) for judge model if configured, else self.llm."""
-        cfg = get_settings()
+        cfg = getattr(self.llm, "settings", None) or get_settings()
         if cfg.judge_model:
             from aegis.llm import get_llm_provider
 
-            judge_llm = get_llm_provider(model=cfg.judge_model)
-            return judge_llm, cfg.judge_model
+            judge_llm = get_llm_provider(settings=cfg.model_copy(update={"model": cfg.judge_model}))
+            return judge_llm, judge_llm.model
 
-        if self.llm is not None:
-            model_name = getattr(self.llm, "model", cfg.model or "unknown")
-            return self.llm, str(model_name)
-
-        from aegis.llm import get_llm_provider
-
-        llm = get_llm_provider(model=cfg.model)
-        return llm, str(cfg.model or "unknown")
+        return self.llm, self.llm.model
 
     def execute(
         self,

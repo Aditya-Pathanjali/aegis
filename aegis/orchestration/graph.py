@@ -6,7 +6,7 @@ import logging
 import time
 import uuid
 from datetime import UTC, datetime
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union, cast
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -35,6 +35,24 @@ from aegis.orchestration.state import AegisState
 from aegis.tools.registry import ToolRegistry, get_tool_registry
 
 logger = logging.getLogger(__name__)
+
+
+def _dataset_overview(dataset_content: Optional[str]) -> Optional[str]:
+    """Describes the uploaded dataset without pasting it into the prompt.
+
+    Agents read the data through describe_dataset, sql_query and python_exec. Pasting the
+    raw CSV cost ~120K input tokens per LLM call on the 5-engine C-MAPSS sample and let
+    agents "manually inspect" rows instead of running tools whose outputs can be cited.
+    """
+    if not dataset_content:
+        return None
+    lines = [line for line in dataset_content.splitlines() if line.strip()]
+    # Capped so a single-line JSON payload can't smuggle the whole dataset back in.
+    header = lines[0][:2000] if lines else ""
+    return (
+        f"A dataset is loaded as SQL table `dataset` ({max(len(lines) - 1, 0)} rows; "
+        f"columns: {header}). Its rows are not included in this prompt: use the tools to read them."
+    )
 
 
 class AegisOrchestrator:
@@ -98,7 +116,7 @@ class AegisOrchestrator:
             details=details or {},
             duration_ms=round(duration_ms, 2),
             token_usage=token_usage,
-            cost_usd=cost_usd,
+            estimated_cost_usd=cost_usd,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             call_count=call_count,
@@ -233,7 +251,7 @@ class AegisOrchestrator:
 
         critic_guidance = state.get("critic_guidance", "") if is_retry else ""
         context = {
-            "content": state.get("dataset_content"),
+            "content": _dataset_overview(state.get("dataset_content")),
             "upstream_context": "\n\n".join(upstream_parts),
             "critic_guidance": critic_guidance,
         }
@@ -352,6 +370,9 @@ class AegisOrchestrator:
 
         results = state.get("specialist_results", {})
         v_res = state.get("verification_result")
+        if v_res is None:
+            # Fail closed: the graph always runs verification first, so a missing result is a bug.
+            raise RuntimeError("verification_result is missing; verification_node must run before critic_node")
         retry_count = state.get("retry_count", 0)
         from aegis.config import get_settings
 
@@ -431,11 +452,15 @@ class AegisOrchestrator:
         cfg = get_settings()
         max_retries = state.get("max_retries", getattr(cfg, "max_agent_retries", 2))
 
+        v_res = state.get("verification_result")
+        if v_res is None:
+            raise RuntimeError("verification_result is missing; verification_node must run before synthesizer_node")
+
         report = self.synthesizer_agent.execute(
             task_id=state["task_id"],
             query=state["query"],
             specialist_results=state.get("specialist_results", {}),
-            verification_result=state.get("verification_result"),
+            verification_result=v_res,
             critic_evaluation=state.get("critic_evaluation"),
             trace_events=state.get("trace_events", []),
             retries_count=state.get("retry_count", 0),
@@ -705,12 +730,12 @@ class AegisOrchestrator:
                         current_state.update(node_update)
             if on_node_finish:
                 try:
-                    on_node_finish(current_state)
+                    on_node_finish(cast(AegisState, current_state))
                 except Exception as exc:
                     logger.exception("Error in on_node_finish during run: %s", exc)
                     raise
 
-        return current_state
+        return cast(AegisState, current_state)
 
     def resume(
         self,
@@ -735,9 +760,9 @@ class AegisOrchestrator:
                         current_state.update(node_update)
             if on_node_finish:
                 try:
-                    on_node_finish(current_state)
+                    on_node_finish(cast(AegisState, current_state))
                 except Exception as exc:
                     logger.exception("Error in on_node_finish during run: %s", exc)
                     raise
 
-        return current_state
+        return cast(AegisState, current_state)
