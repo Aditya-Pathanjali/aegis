@@ -421,13 +421,23 @@ class AegisOrchestrator:
         report = state.get("final_report")
         conf = report.executive_summary.overall_confidence if report else None
         actions = list(report.executive_summary.actionable_recommendations) if report else []
+        v_res = state.get("verification_result")
+        critic = state.get("critic_evaluation")
+        has_quality_failure = (
+            (v_res and not v_res.metrics.quality_pass)
+            or (critic and not critic.quality_pass)
+        )
 
         approval_req = HumanApprovalRequest(
             task_id=state["task_id"],
             required=True,
             status="pending",
-            reason="Human approval required before finalizing actions.",
-            risk_level="high" if (conf is not None and conf < 0.75) else "medium",
+            reason=(
+                "Quality failure detected (no verified findings): manual review required."
+                if has_quality_failure
+                else "Human approval required before finalizing actions."
+            ),
+            risk_level="high" if (has_quality_failure or (conf is not None and conf < 0.75)) else "medium",
             proposed_actions=actions,
         )
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pydantic
+import pytest
+
 from aegis.agents.critic import CriticAgent, CriticRubricOutput
 from aegis.agents.verification import JudgeVerdict, VerificationAgent
 from aegis.models.schemas import (
@@ -21,10 +24,148 @@ from aegis.models.schemas import (
 )
 from aegis.orchestration.graph import AegisOrchestrator
 from aegis.orchestration.state import AegisState
-from tests.fakes import FakeLLM, fake_text
+from tests.fakes import FakeLLM, fake_text, fake_tool_call
 
 
-def test_numeric_mismatch_caught():
+def test_all_combinations_of_numeric_mismatch_and_judge_verdict():
+    """Tests all 6 combinations of (numeric mismatch yes/no) x (judge verdict)."""
+    call_id = "call-matrix-1"
+    evidence_text = "Operational temperature measured at 75.0 C with velocity RMS 2.5 mm/s."
+    tool_rec = ToolCallRecord(
+        call_id=call_id,
+        tool_name="sql_query",
+        arguments={},
+        output={"text": evidence_text},
+        execution_time_ms=5.0,
+        success=True,
+    )
+
+    test_matrix = [
+        # (claim, judge_verdict, quote, expected_status, expected_is_supported)
+        # 1. No numeric mismatch, judge says supported
+        ("Temperature reached 75.0 C.", "supported", "75.0 C", "supported", True),
+        # 2. No numeric mismatch, judge says contradicted
+        ("Temperature reached 75.0 C.", "contradicted", "75.0 C", "contradicted", False),
+        # 3. No numeric mismatch, judge says not_enough_info
+        ("Temperature reached 75.0 C.", "not_enough_info", "", "unsupported", False),
+        # 4. Numeric mismatch (claim has 99.0 which is not in evidence), judge says supported
+        ("Temperature reached 99.0 C.", "supported", "75.0 C", "unsupported", False),
+        # 5. Numeric mismatch, judge says contradicted
+        ("Temperature reached 99.0 C.", "contradicted", "75.0 C", "contradicted", False),
+        # 6. Numeric mismatch, judge says not_enough_info
+        ("Temperature reached 99.0 C.", "not_enough_info", "", "unsupported", False),
+    ]
+
+    for claim_text, verdict, quote, expected_status, expected_is_supported in test_matrix:
+        finding = Finding(
+            statement=claim_text,
+            evidence=[EvidenceRef(kind="tool_call", ref_id=call_id)],
+        )
+        spec_res = AgentExecutionResult(
+            subtask_id="st-test",
+            agent_role=AgentRole.DATA_ANALYST,
+            output_summary="Matrix test",
+            findings=[finding],
+            tool_calls=[tool_rec],
+        )
+        fake_judge = JudgeVerdict(verdict=verdict, quote_span=quote, rationale="Matrix test")
+        fake_llm = FakeLLM(responses=[fake_judge])
+        verifier = VerificationAgent(llm_provider=fake_llm)
+
+        v_res = verifier.execute(specialist_results=[spec_res])
+        assert len(v_res.claims) == 1
+        claim_res = v_res.claims[0]
+        assert claim_res.status == expected_status, f"Failed for {claim_text} + {verdict}"
+        assert claim_res.is_supported is expected_is_supported, f"Failed is_supported for {claim_text} + {verdict}"
+
+
+def test_empty_findings_fails_verification_and_triggers_critic_and_human_gate():
+    """Empty report (zero findings) has None metrics, quality_pass=False, and triggers human gate / critic failure."""
+    verifier = VerificationAgent(llm_provider=FakeLLM())
+    spec_res = AgentExecutionResult(
+        subtask_id="st-empty",
+        agent_role=AgentRole.DATA_ANALYST,
+        output_summary="Empty findings",
+        findings=[],
+    )
+
+    v_res = verifier.execute(specialist_results=[spec_res])
+    assert v_res.metrics.supported_ratio is None
+    assert v_res.metrics.citation_coverage is None
+    assert v_res.metrics.quality_pass is False
+    assert v_res.audit_notes == "no findings to verify"
+
+    # Critic must evaluate quality_pass as False
+    critic = CriticAgent(llm_provider=FakeLLM(responses=[
+        CriticRubricOutput(answers_question=8.0, uses_task_data=8.0, claims_verified=8.0, limitations_stated=8.0)
+    ]))
+    c_eval = critic.execute(specialist_results=[spec_res], verification_result=v_res)
+    assert c_eval.quality_pass is False
+
+    # Human review gate must treat quality failure as high risk
+    orch = AegisOrchestrator(llm_provider=FakeLLM())
+    gate_state: AegisState = {
+        "task_id": "test-empty-gate",
+        "query": "Test query",
+        "verification_result": v_res,
+        "critic_evaluation": c_eval,
+        "require_human_approval": True,
+    }
+    gate_out = orch._human_gate_node(gate_state)
+    approval = gate_out["human_approval"]
+    assert approval.risk_level == "high"
+    assert "quality failure" in approval.reason.lower() or "no verified findings" in approval.reason.lower()
+
+
+def test_tool_name_citation_does_not_resolve():
+    """Citing tool name (e.g. 'sql_query') instead of call_id must NOT resolve to evidence."""
+    call_id = "real-call-id-123"
+    tool_rec = ToolCallRecord(
+        call_id=call_id,
+        tool_name="sql_query",
+        arguments={},
+        output={"pressure": 120.0},
+        execution_time_ms=5.0,
+        success=True,
+    )
+    # Finding cites tool_name "sql_query" as ref_id instead of "real-call-id-123"
+    finding = Finding(
+        statement="Pressure was 120.0.",
+        evidence=[EvidenceRef(kind="tool_call", ref_id="sql_query")],
+    )
+    spec_res = AgentExecutionResult(
+        subtask_id="st-cite",
+        agent_role=AgentRole.DATA_ANALYST,
+        output_summary="Tool cite test",
+        findings=[finding],
+        tool_calls=[tool_rec],
+    )
+
+    verifier = VerificationAgent(llm_provider=FakeLLM())
+    v_res = verifier.execute(specialist_results=[spec_res])
+
+    assert len(v_res.claims) == 1
+    assert v_res.claims[0].status == "no_evidence"
+    assert v_res.claims[0].is_supported is False
+
+
+def test_claim_verification_schema_requires_status():
+    """ClaimVerification requires status (no default) and derives is_supported."""
+    from aegis.models.schemas import ClaimVerification
+
+    # Missing status raises ValidationError
+    with pytest.raises(pydantic.ValidationError):
+        ClaimVerification(claim="Test claim")
+
+    # Provided status derives is_supported
+    cv_sup = ClaimVerification(claim="Valid claim", status="supported")
+    assert cv_sup.is_supported is True
+
+    cv_unsup = ClaimVerification(claim="Invalid claim", status="unsupported")
+    assert cv_unsup.is_supported is False
+
+    cv_contra = ClaimVerification(claim="Contradicted claim", status="contradicted")
+    assert cv_contra.is_supported is False
     """Deterministic numeric check extracts claim numbers and flags mismatch if not in evidence."""
     call_id = "call-telemetry-1"
     tool_record = ToolCallRecord(
@@ -207,10 +348,26 @@ def test_retry_reexecutes_only_targeted_subtask_and_preserves_others():
         guidance="Re-run SQL query filtering valid temperature records.",
     )
 
-    # Targeted retry of st-2 returns clean findings
+    # Targeted retry of st-2 executes tool query and returns verified finding
+    call_id_st2 = "call-st2-query"
+    tool_resp_st2 = fake_tool_call(
+        name="sql_query",
+        args={"sql": "SELECT 82.0 as temp"},
+        tool_call_id=call_id_st2,
+    )
     st2_out_retry = SpecialistOutput(
         summary="Coolant temperature peaked at 82 C.",
-        findings=[],  # clean -> passes verification
+        findings=[
+            Finding(
+                statement="Coolant temperature peaked at 82.0 C.",
+                evidence=[EvidenceRef(kind="tool_call", ref_id=call_id_st2)],
+            )
+        ],
+    )
+    judge_pass = JudgeVerdict(
+        verdict="supported",
+        quote_span="82.0",
+        rationale="Matches SQL output",
     )
 
     # Critic passes
@@ -228,7 +385,7 @@ def test_retry_reexecutes_only_targeted_subtask_and_preserves_others():
     synth_draft = SynthesizerOutput(
         title="Cooling System Assessment",
         final_finding="Coolant temperature remained within safe limits.",
-        key_conclusions=["Temperature peak was 82 C, below 85 C limit."],
+        key_conclusions=["Temperature peak was 82.0 C, below 85 C limit."],
         actionable_recommendations=["Continue routine scheduled inspection."],
     )
 
@@ -241,8 +398,10 @@ def test_retry_reexecutes_only_targeted_subtask_and_preserves_others():
             st2_out_initial,
             critic_request_retry,
             # Targeted retry of st-2 ONLY (st-1 is NOT called again!)
+            tool_resp_st2,
             fake_text("Re-running SQL with filter"),
             st2_out_retry,
+            judge_pass,
             critic_pass,
             synth_draft,
         ]
@@ -388,8 +547,8 @@ def test_different_questions_produce_different_final_reports():
     orch_a = AegisOrchestrator(llm_provider=fake_llm_a)
     orch_b = AegisOrchestrator(llm_provider=fake_llm_b)
 
-    res_a = orch_a.run({"task_id": "t-qa", "query": "Inspect bearing vibration", "require_human_approval": False})
-    res_b = orch_b.run({"task_id": "t-qb", "query": "Assess heat exchanger", "require_human_approval": False})
+    res_a = orch_a.run({"task_id": "t-qa", "query": "Inspect bearing vibration", "require_human_approval": False, "max_retries": 0})
+    res_b = orch_b.run({"task_id": "t-qb", "query": "Assess heat exchanger", "require_human_approval": False, "max_retries": 0})
 
     rep_a = res_a["final_report"]
     rep_b = res_b["final_report"]

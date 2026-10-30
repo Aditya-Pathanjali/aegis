@@ -77,13 +77,14 @@ class CriticAgent(BaseAgent):
 
         v_metrics = verification_result.metrics
         unsupported_summary = "; ".join(verification_result.unsupported_claims) or "None"
+        ratio_str = f"{v_metrics.supported_ratio:.2f}" if v_metrics.supported_ratio is not None else "N/A"
 
         prompt = (
             "Specialist Execution Results:\n"
             + "\n".join(summary_lines)
             + f"\n\nVerification Audit Summary:\n"
             f"- Status: {verification_result.status}\n"
-            f"- Supported: {v_metrics.supported}/{len(verification_result.claims)} (Ratio: {v_metrics.supported_ratio:.2f})\n"
+            f"- Supported: {v_metrics.supported}/{len(verification_result.claims)} (Ratio: {ratio_str})\n"
             f"- Contradictions: {v_metrics.contradicted}\n"
             f"- Numeric Mismatches: {v_metrics.numeric_mismatches}\n"
             f"- Unsupported Claims: {unsupported_summary}\n"

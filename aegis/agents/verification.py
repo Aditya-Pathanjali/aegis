@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Union
@@ -86,22 +85,21 @@ class VerificationAgent(BaseAgent):
         resolved_texts: List[str] = []
         sources: List[str] = []
 
-        # Map tool calls by call_id and tool_name
+        # Map tool calls strictly by call_id (never by tool name)
         all_tool_calls = [tc for res in specialist_results for tc in res.tool_calls]
         tool_by_call_id = {tc.call_id: tc for tc in all_tool_calls if tc.call_id}
-        tool_by_name = {tc.tool_name: tc for tc in all_tool_calls}
 
         # Check vector store if available
         vector_store = None
         if self.tool_registry:
-            rag_tool = self.tool_registry.get_tool("rag_search") or self.tool_registry.get_tool("rag_retriever")
+            rag_tool = self.tool_registry.get_tool("rag_search")
             if rag_tool and hasattr(rag_tool, "retriever") and hasattr(rag_tool.retriever, "vector_store"):
                 vector_store = rag_tool.retriever.vector_store
 
         for ref in finding.evidence:
             ref_id = ref.ref_id
             if ref.kind in ("tool_call", "tool_output"):
-                tc = tool_by_call_id.get(ref_id) or tool_by_name.get(ref_id)
+                tc = tool_by_call_id.get(ref_id)
                 if tc and tc.output is not None:
                     out_str = json.dumps(tc.output) if isinstance(tc.output, (dict, list)) else str(tc.output)
                     resolved_texts.append(out_str)
@@ -110,14 +108,11 @@ class VerificationAgent(BaseAgent):
                 chunk_found = False
                 # Try vector store
                 if vector_store:
-                    try:
-                        chunk = vector_store.get_chunk(ref_id)
-                        if chunk:
-                            resolved_texts.append(chunk.text)
-                            sources.append(ref_id)
-                            chunk_found = True
-                    except Exception:
-                        pass
+                    chunk = vector_store.get_chunk(ref_id)
+                    if chunk:
+                        resolved_texts.append(chunk.text)
+                        sources.append(ref_id)
+                        chunk_found = True
 
                 # Try RAG tool outputs in tool calls
                 if not chunk_found:
@@ -138,26 +133,23 @@ class VerificationAgent(BaseAgent):
 
         return "\n\n".join(resolved_texts), sources
 
-    def _get_judge_llm(self) -> LLMProvider:
-        """Returns LLM provider for judge model if configured, else self.llm."""
+    def _get_judge_llm(self) -> tuple[LLMProvider, str]:
+        """Returns (LLMProvider, model_name) for judge model if configured, else self.llm."""
         cfg = get_settings()
-        if (
-            cfg.judge_model
-            and self.llm is not None
-            and hasattr(self.llm, "model")
-            and getattr(self.llm, "model", None) != "fake-model"
-        ):
-            try:
-                from aegis.llm.anthropic_provider import AnthropicProvider
-                from aegis.llm.openai_provider import OpenAIProvider
+        if cfg.judge_model:
+            from aegis.llm import get_llm_provider
 
-                if cfg.provider == "anthropic" and os.environ.get("ANTHROPIC_API_KEY"):
-                    return AnthropicProvider(model=cfg.judge_model, api_key=os.environ["ANTHROPIC_API_KEY"], settings=cfg)
-                elif cfg.provider == "openai" and os.environ.get("OPENAI_API_KEY"):
-                    return OpenAIProvider(model=cfg.judge_model, api_key=os.environ["OPENAI_API_KEY"], settings=cfg)
-            except Exception:
-                pass
-        return self.llm
+            judge_llm = get_llm_provider(model=cfg.judge_model)
+            return judge_llm, cfg.judge_model
+
+        if self.llm is not None:
+            model_name = getattr(self.llm, "model", cfg.model or "unknown")
+            return self.llm, str(model_name)
+
+        from aegis.llm import get_llm_provider
+
+        llm = get_llm_provider(model=cfg.model)
+        return llm, str(cfg.model or "unknown")
 
     def execute(
         self,
@@ -175,7 +167,7 @@ class VerificationAgent(BaseAgent):
 
         claims_verified: List[ClaimVerification] = []
         unsupported_claims: List[str] = []
-        judge_provider = self._get_judge_llm()
+        judge_provider, judge_model_name = self._get_judge_llm()
 
         for s_res in results_list:
             for finding in s_res.findings:
@@ -232,11 +224,13 @@ class VerificationAgent(BaseAgent):
                 # Status determination
                 final_status: Literal["supported", "contradicted", "unsupported", "no_evidence"]
                 if has_numeric_mismatch:
-                    final_status = "unsupported" if verdict == "supported" else verdict
-                elif verdict == "not_enough_info":
+                    final_status = "contradicted" if verdict == "contradicted" else "unsupported"
+                elif verdict == "supported":
+                    final_status = "supported"
+                elif verdict == "contradicted":
+                    final_status = "contradicted"
+                else:  # not_enough_info
                     final_status = "unsupported"
-                else:
-                    final_status = verdict
 
                 is_supported = (final_status == "supported")
                 contradiction_detected = (final_status == "contradicted")
@@ -265,16 +259,42 @@ class VerificationAgent(BaseAgent):
 
         # Aggregate Metrics
         total_claims = len(claims_verified)
+        duration = round(time.perf_counter() - t0, 3)
+
+        if total_claims == 0:
+            audit_notes = "no findings to verify"
+            metrics = VerificationMetrics(
+                supported=0,
+                contradicted=0,
+                unsupported=0,
+                no_evidence=0,
+                supported_ratio=None,
+                citation_coverage=None,
+                numeric_mismatches=0,
+                quality_pass=False,
+                evidence_coverage=0.0,
+                overall_reliability=0.0,
+            )
+            return VerificationResult(
+                status="needs_revision",
+                claims=[],
+                metrics=metrics,
+                unsupported_claims=[],
+                audit_notes=audit_notes,
+                verification_time_seconds=duration,
+                metadata={"judge_model": judge_model_name},
+            )
+
         supported_count = sum(1 for c in claims_verified if c.status == "supported")
         contradicted_count = sum(1 for c in claims_verified if c.status == "contradicted")
         unsupported_count = sum(1 for c in claims_verified if c.status == "unsupported")
         no_evidence_count = sum(1 for c in claims_verified if c.status == "no_evidence")
         numeric_mismatches = sum(1 for c in claims_verified if c.numeric_mismatch)
 
-        supported_ratio = round(supported_count / total_claims, 4) if total_claims > 0 else 1.0
+        supported_ratio = round(supported_count / total_claims, 4)
         citation_coverage = round(
             sum(1 for c in claims_verified if c.status != "no_evidence") / total_claims, 4
-        ) if total_claims > 0 else 1.0
+        )
 
         # Quality pass: 0 contradictions, 0 numeric mismatches, and unsupported <= 20% (supported_ratio >= 0.8)
         quality_pass = (
@@ -296,7 +316,6 @@ class VerificationAgent(BaseAgent):
             overall_reliability=round(supported_ratio * 100.0, 1),
         )
 
-        duration = round(time.perf_counter() - t0, 3)
         status_str = "passed" if quality_pass else "needs_revision"
 
         audit_notes = (
@@ -311,4 +330,5 @@ class VerificationAgent(BaseAgent):
             unsupported_claims=unsupported_claims,
             audit_notes=audit_notes,
             verification_time_seconds=duration,
+            metadata={"judge_model": judge_model_name},
         )
