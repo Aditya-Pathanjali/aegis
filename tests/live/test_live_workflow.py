@@ -170,8 +170,11 @@ def assert_live_workflow_result(result: dict[str, Any] | AegisState, df: pd.Data
                 f"Supported claim '{claim.claim}' has no matching cited tool call records ({claim_cited_ids})"
             )
 
+            # Same evidence the verifier uses: the call's arguments (SQL/code) plus its output
             tool_outputs_text = " ".join(
-                json.dumps(tc.output) if isinstance(tc.output, (dict, list)) else str(tc.output)
+                json.dumps(tc.arguments)
+                + " "
+                + (json.dumps(tc.output) if isinstance(tc.output, (dict, list)) else str(tc.output))
                 for tc in matching_tool_calls
             )
             evidence_numbers = extract_numbers(tool_outputs_text)

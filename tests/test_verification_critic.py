@@ -7,7 +7,7 @@ import pydantic
 import pytest
 
 from aegis.agents.critic import CriticAgent, CriticRubricOutput
-from aegis.agents.verification import JudgeVerdict, VerificationAgent
+from aegis.agents.verification import JudgeVerdict, VerificationAgent, extract_numbers
 from aegis.config import Settings
 from aegis.models.schemas import (
     AgentExecutionResult,
@@ -151,6 +151,41 @@ def test_tool_name_citation_does_not_resolve():
     assert len(v_res.claims) == 1
     assert v_res.claims[0].status == "no_evidence"
     assert v_res.claims[0].is_supported is False
+
+
+def test_extract_numbers_reads_typographic_minus_as_negative():
+    # Live run 4: "delta of −14.927895" (U+2212) parsed as +14.927895 and was flagged as a mismatch
+    assert extract_numbers("delta of −14.927895, r = −0.713154") == [-14.927895, -0.713154]
+
+
+def test_numeric_check_accepts_parameters_from_tool_call_arguments():
+    """Live run 4: 'For unit 1 ... first-10% mean' was flagged because 1 and 10 appear only in the
+    python_exec code, not in its printed output. A tool call's arguments are evidence too."""
+    tool_rec = ToolCallRecord(
+        call_id="call-py-1",
+        tool_name="python_exec",
+        arguments={"code": "u = df[df.unit_number == 1]; k = len(u) * 10 // 100; print(u.sensor_4.head(k).mean())"},
+        output={"stdout": "1400.643684\n"},
+        execution_time_ms=5.0,
+        success=True,
+    )
+    finding = Finding(
+        statement="For unit 1, sensor_4 first-10% mean is 1400.643684.",
+        evidence=[EvidenceRef(kind="tool_call", ref_id="call-py-1")],
+    )
+    spec_res = AgentExecutionResult(
+        subtask_id="st-args",
+        agent_role=AgentRole.DATA_ANALYST,
+        output_summary="Args evidence test",
+        findings=[finding],
+        tool_calls=[tool_rec],
+    )
+    judge = JudgeVerdict(verdict="supported", quote_span="1400.643684", rationale="Matches stdout.")
+    verifier = VerificationAgent(llm_provider=FakeLLM(responses=[judge]))
+    v_res = verifier.execute(specialist_results=[spec_res])
+
+    assert v_res.claims[0].numeric_mismatch is False
+    assert v_res.claims[0].status == "supported"
 
 
 def test_claim_verification_schema_requires_status():
