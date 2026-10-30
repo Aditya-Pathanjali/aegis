@@ -43,7 +43,7 @@ def test_live_workflow_cmapss():
         task_context=task_context,
     )
 
-    query = "Analyze operational degradation for engine 1 and determine failure characteristics."
+    query = "What is the maximum number of time_cycles observed for unit_number 1 (engine 1) in the dataset, and what are its operational degradation characteristics?"
     initial_state = {
         "task_id": "live-cmapss-run",
         "query": query,
@@ -90,13 +90,44 @@ def test_live_workflow_cmapss():
     assert len(report.executive_summary.actionable_recommendations) > 0, "Report recommendations are empty"
     assert len(report.limitations) > 0, "Report limitations are empty"
 
-    # 5. Asserts every number in the report matches a computed statistic from the dataset
+    # 5. Domain-specific check: engine 1 max time_cycles is 192 in the dataset
     e1_df = df[df["unit_number"] == 1]
-    e1_max_cycles = float(e1_df["time_cycles"].max())
+    e1_max_cycles = int(e1_df["time_cycles"].max())
+    assert e1_max_cycles == 192
+
+    all_report_texts = (
+        [report.title, report.final_finding, report.executive_summary.data_analysis_summary]
+        + list(report.executive_summary.key_conclusions)
+        + [f.statement for f in report.verified_findings]
+    )
+    combined_report_text = " ".join(all_report_texts)
+    assert "192" in combined_report_text, (
+        f"Expected computed answer 192 (max time_cycles for engine 1) in final report text, got: {combined_report_text}"
+    )
+
+    # Assert that findings citing 192 cite the tool output that produced it
+    findings_with_192 = [f for f in report.verified_findings if "192" in f.statement]
+    if not findings_with_192:
+        all_spec_findings = [f for r in specialist_results.values() for f in r.findings if "192" in f.statement]
+        assert len(all_spec_findings) > 0, "No specialist finding contains 192"
+        findings_with_192 = all_spec_findings
+
+    for f in findings_with_192:
+        assert len(f.evidence) > 0, f"Finding '{f.statement}' does not cite evidence"
+        tool_call_ids = [ref.ref_id for ref in f.evidence if ref.kind == "tool_call"]
+        assert len(tool_call_ids) > 0, f"Finding '{f.statement}' did not cite any tool_call"
+        all_tool_records = [tc for r in specialist_results.values() for tc in r.tool_calls]
+        cited_records = [tc for tc in all_tool_records if tc.call_id in tool_call_ids]
+        assert len(cited_records) > 0, f"No tool call records found for cited IDs {tool_call_ids}"
+        assert any("192" in str(tc.output) for tc in cited_records), (
+            f"Cited tool output does not contain 192: {[tc.output for tc in cited_records]}"
+        )
+
+    # 6. Asserts every number in supported claims matches computed dataset statistics
     e1_min_cycles = float(e1_df["time_cycles"].min())
     total_rows = float(len(e1_df))
 
-    dataset_nums = [e1_max_cycles, e1_min_cycles, total_rows, 1.0]
+    dataset_nums = [float(e1_max_cycles), e1_min_cycles, total_rows, 1.0]
     for col in e1_df.columns:
         if col not in ("unit_number", "time_cycles"):
             dataset_nums.append(round(float(e1_df[col].mean()), 2))
