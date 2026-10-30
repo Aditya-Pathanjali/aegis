@@ -56,6 +56,14 @@ class LLMResponse(BaseModel):
     latency_ms: float = 0.0
     cost_usd: Optional[float] = None
 
+    @property
+    def content(self) -> List[Block]:
+        blocks: List[Block] = []
+        if self.text is not None:
+            blocks.append(TextBlock(text=self.text))
+        blocks.extend(self.tool_calls)
+        return blocks
+
 
 class StructuredResult(BaseModel):
     value: Any

@@ -56,6 +56,8 @@ class ToolRegistry:
     def register(self, tool: BaseTool) -> None:
         self._tools[tool.name] = tool
 
+    register_tool = register
+
     def get_tool(self, tool_name: str) -> Optional[BaseTool]:
         return self._tools.get(tool_name)
 
@@ -74,11 +76,13 @@ class ToolRegistry:
         role: AgentRole,
         tool_name: str,
         arguments: Dict[str, Any],
+        call_id: Optional[str] = None,
     ) -> ToolCallRecord:
         """Executes a tool under role-based authorization check."""
         if not self.can_agent_use(role, tool_name):
             error_msg = f"Security Policy Violation: Agent role '{role.value}' is NOT authorized to execute tool '{tool_name}'."
             return ToolCallRecord(
+                call_id=call_id,
                 tool_name=tool_name,
                 arguments=arguments,
                 output=None,
@@ -90,6 +94,7 @@ class ToolRegistry:
         tool = self._tools.get(tool_name)
         if not tool:
             return ToolCallRecord(
+                call_id=call_id,
                 tool_name=tool_name,
                 arguments=arguments,
                 output=None,
@@ -99,7 +104,7 @@ class ToolRegistry:
             )
 
         result: ToolResult = tool.execute(**arguments)
-        return result.to_record(arguments=arguments)
+        return result.to_record(arguments=arguments, call_id=call_id)
 
 
 _global_tool_registry: Optional[ToolRegistry] = None

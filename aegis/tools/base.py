@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
@@ -19,8 +19,9 @@ class ToolResult(BaseModel):
     execution_time_ms: float = 0.0
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    def to_record(self, arguments: Dict[str, Any]) -> ToolCallRecord:
+    def to_record(self, arguments: Dict[str, Any], call_id: Optional[str] = None) -> ToolCallRecord:
         return ToolCallRecord(
+            call_id=call_id,
             tool_name=self.tool_name,
             arguments=arguments,
             output=self.data if self.success else None,

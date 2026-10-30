@@ -6,6 +6,7 @@ from aegis.models.schemas import (
     AgentRole,
     ApprovalAction,
     ExecutionPlan,
+    SpecialistOutput,
     SubTask,
     TaskStatus,
     TaskSubmission,
@@ -13,7 +14,7 @@ from aegis.models.schemas import (
 from aegis.orchestration.graph import AegisOrchestrator
 from aegis.orchestration.state import AegisState
 from aegis.services.orchestrator_service import OrchestratorService
-from tests.fakes import FakeLLM
+from tests.fakes import FakeLLM, fake_text
 
 
 def test_orchestrator_complete_run():
@@ -27,16 +28,21 @@ def test_orchestrator_complete_run():
                 title="Literature Research",
                 description="Search literature guidelines",
                 assigned_agent=AgentRole.RESEARCH,
+                required_tools=["rag_search"],
             ),
             SubTask(
                 id="subtask-2",
                 title="Data Profiling",
                 description="Analyze telemetry dataset",
                 assigned_agent=AgentRole.DATA_ANALYST,
+                required_tools=["sql_query"],
             ),
         ],
     )
-    orchestrator = AegisOrchestrator(llm_provider=FakeLLM(responses=[plan]))
+    res_1 = SpecialistOutput(summary="Research done.", findings=[], limitations=[])
+    res_2 = SpecialistOutput(summary="Data analysis done.", findings=[], limitations=[])
+    fake_llm = FakeLLM(responses=[plan, fake_text("Done."), res_1, fake_text("Done."), res_2])
+    orchestrator = AegisOrchestrator(llm_provider=fake_llm)
     initial_state: AegisState = {
         "task_id": "test-orch-1",
         "query": "Evaluate equipment maintenance feasibility.",
@@ -65,10 +71,12 @@ def test_human_gate_triggering_and_approval():
                 title="Literature Research",
                 description="Search literature guidelines",
                 assigned_agent=AgentRole.RESEARCH,
+                required_tools=["rag_search"],
             )
         ],
     )
-    service = OrchestratorService(llm_provider=FakeLLM(responses=[plan]))
+    res_1 = SpecialistOutput(summary="Research done.", findings=[], limitations=[])
+    service = OrchestratorService(llm_provider=FakeLLM(responses=[plan, fake_text("Done."), res_1]))
     task_id = service.submit_task(
         TaskSubmission(
             query="Analyze equipment with mandatory sign-off.",

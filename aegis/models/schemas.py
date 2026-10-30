@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+from aegis.llm.types import Usage
 
 
 class AgentRole(str, Enum):
@@ -39,7 +41,24 @@ class ApprovalAction(str, Enum):
     REQUEST_REANALYSIS = "request_reanalysis"
 
 
+class EvidenceRef(BaseModel):
+    kind: Literal["tool_call", "chunk", "tool_output"]
+    ref_id: str
+
+
+class Finding(BaseModel):
+    statement: str
+    evidence: List[EvidenceRef] = Field(default_factory=list)
+
+
+class SpecialistOutput(BaseModel):
+    summary: str
+    findings: List[Finding] = Field(default_factory=list)
+    limitations: List[str] = Field(default_factory=list)
+
+
 class ToolCallRecord(BaseModel):
+    call_id: Optional[str] = None
     tool_name: str
     arguments: Dict[str, Any] = Field(default_factory=dict)
     output: Any = None
@@ -49,12 +68,14 @@ class ToolCallRecord(BaseModel):
 
 
 class SubTask(BaseModel):
+    model_config = {"populate_by_name": True}
+
     id: str
-    title: str
     description: str
-    assigned_agent: AgentRole
-    required_tools: List[str] = Field(default_factory=list)
-    dependencies: List[str] = Field(default_factory=list)
+    role: AgentRole = Field(default=AgentRole.RESEARCH, alias="assigned_agent")
+    tools: List[str] = Field(default_factory=list, alias="required_tools")
+    depends_on: List[str] = Field(default_factory=list, alias="dependencies")
+    title: str = ""
     status: str = "pending"  # pending, in_progress, completed, failed, retrying
     output: Optional[str] = None
     structured_data: Optional[Dict[str, Any]] = None
@@ -62,12 +83,27 @@ class SubTask(BaseModel):
     retry_count: int = 0
     error: Optional[str] = None
 
+    @property
+    def assigned_agent(self) -> AgentRole:
+        return self.role
+
+    @property
+    def required_tools(self) -> List[str]:
+        return self.tools
+
+    @property
+    def dependencies(self) -> List[str]:
+        return self.depends_on
+
+
+Subtask = SubTask
+
 
 class ExecutionPlan(BaseModel):
-    task_id: str
-    original_query: str = ""
-    objective: str
     subtasks: List[SubTask]
+    task_id: str = ""
+    original_query: str = ""
+    objective: str = ""
     estimated_complexity: str = "medium"  # low, medium, high
     rationale: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -77,12 +113,14 @@ class AgentExecutionResult(BaseModel):
     subtask_id: str
     agent_role: AgentRole
     output_summary: str
+    findings: List[Finding] = Field(default_factory=list)
+    limitations: List[str] = Field(default_factory=list)
     detailed_findings: List[str] = Field(default_factory=list)
     code_snippets: List[Dict[str, str]] = Field(default_factory=list)
     data_tables: List[Dict[str, Any]] = Field(default_factory=list)
     tool_calls: List[ToolCallRecord] = Field(default_factory=list)
     execution_time_seconds: float = 0.0
-    confidence_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    usage: Optional[Usage] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
