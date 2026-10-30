@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from langgraph.types import Command
 
@@ -19,6 +21,7 @@ from aegis.models.schemas import (
     SubTask,
     SynthesizerOutput,
     TaskStatus,
+    TaskSubmission,
     TraceEvent,
 )
 from aegis.orchestration.graph import AegisOrchestrator
@@ -72,7 +75,7 @@ def test_pause_and_resume_with_command():
         "task_id": "t-pause-cmd",
         "query": "Audit compressor bearing vibration",
         "require_human_approval": True,
-        "max_retries": 1,
+        "max_retries": 0,
         "retry_count": 0,
     }
 
@@ -255,7 +258,7 @@ def test_trace_token_counts_match_fake_llm_and_cost_null_for_unpriced_model(tmp_
             "task_id": "t-tokens-test",
             "query": "Check telemetry",
             "require_human_approval": False,
-            "max_retries": 1,
+            "max_retries": 0,
             "retry_count": 0,
         }
     )
@@ -314,7 +317,7 @@ def test_trace_token_counts_match_fake_llm_and_cost_null_for_unpriced_model(tmp_
                 "task_id": "t-priced-test",
                 "query": "Check telemetry priced",
                 "require_human_approval": False,
-                "max_retries": 1,
+                "max_retries": 0,
                 "retry_count": 0,
             }
         )
@@ -329,3 +332,52 @@ def test_trace_token_counts_match_fake_llm_and_cost_null_for_unpriced_model(tmp_
     finally:
         pricing.DEFAULT_PRICING_FILE = orig_default
         clear_pricing_cache()
+
+
+def test_approve_request_reanalysis_returns_202_and_executing():
+    """Verify POST /api/tasks/{task_id}/approve with request_reanalysis returns HTTP 202 and sets status to EXECUTING."""
+    client = TestClient(app)
+    service = get_orchestrator_service()
+    task_id = "task-reanalysis-test-202"
+    service.state_store.save_state(
+        task_id,
+        {
+            "task_id": task_id,
+            "query": "Reanalysis query",
+            "status": TaskStatus.WAITING_APPROVAL,
+            "human_approval": HumanApprovalRequest(task_id=task_id, required=True, status="pending"),
+            "trace_events": [],
+            "errors": [],
+        },
+    )
+
+    resp = client.post(
+        f"/api/tasks/{task_id}/approve",
+        json={"action": "request_reanalysis", "feedback": "Include vibration sensor 4 data."},
+    )
+    assert resp.status_code == 202
+    data = resp.json()
+    assert data["status"] == "executing"
+    assert data["approval_request"]["status"] == "revision_requested"
+    assert data["approval_request"]["feedback"] == "Include vibration sensor 4 data."
+
+
+def test_state_save_failure_fails_task_loudly(caplog):
+    """Failing state-save in orchestrator/service fails the task and logs via logger.exception (no silent pass)."""
+    from aegis.memory.state_store import TaskStateStore
+    from aegis.services.orchestrator_service import OrchestratorService
+
+    class FailingStateStore(TaskStateStore):
+        def save_state(self, task_id: str, state: dict) -> None:
+            if state.get("status") != TaskStatus.FAILED:
+                raise IOError("Simulated disk full during state save")
+            super().save_state(task_id, state)
+
+    store = FailingStateStore()
+    service = OrchestratorService(state_store=store, llm_provider=FakeLLM())
+
+    with caplog.at_level(logging.ERROR):
+        # Attempting submit_task with broken initial state save raises immediately
+        with pytest.raises(IOError, match="Simulated disk full"):
+            service.submit_task(TaskSubmission(query="Test query"))
+

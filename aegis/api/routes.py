@@ -10,7 +10,7 @@ import re
 from typing import Any, Dict, List
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 
 from aegis.api.schemas import (
@@ -19,7 +19,13 @@ from aegis.api.schemas import (
     RAGSearchRequest,
 )
 from aegis.config import Settings, get_settings
-from aegis.models.schemas import TaskResponse, TaskStatus, TaskSubmission, TraceEvent
+from aegis.models.schemas import (
+    ApprovalAction,
+    TaskResponse,
+    TaskStatus,
+    TaskSubmission,
+    TraceEvent,
+)
 from aegis.rag.retriever import get_rag_knowledge_base
 from aegis.services.orchestrator_service import get_orchestrator_service
 
@@ -250,7 +256,7 @@ async def stream_task_events(task_id: str, request: Request):
 
 @router.post("/tasks/{task_id}/approve", response_model=TaskResponse)
 @router.post("/tasks/{task_id}/approval", response_model=TaskResponse)
-def handle_human_approval(task_id: str, req: ApprovalActionRequest):
+def handle_human_approval(task_id: str, req: ApprovalActionRequest, response: Response):
     """Handles Human-in-the-Loop approval decision (Approve, Reject, Request Re-analysis)."""
     service = get_orchestrator_service()
     state = service.state_store.get_state(task_id)
@@ -264,6 +270,8 @@ def handle_human_approval(task_id: str, req: ApprovalActionRequest):
         )
 
     try:
+        if req.action == ApprovalAction.REQUEST_REANALYSIS:
+            response.status_code = status.HTTP_202_ACCEPTED
         updated_task = service.resolve_human_approval(
             task_id=task_id,
             action=req.action,

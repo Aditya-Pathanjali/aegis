@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from datetime import UTC, datetime
@@ -32,6 +33,8 @@ from aegis.orchestration.router import (
 )
 from aegis.orchestration.state import AegisState
 from aegis.tools.registry import ToolRegistry, get_tool_registry
+
+logger = logging.getLogger(__name__)
 
 
 class AegisOrchestrator:
@@ -108,8 +111,9 @@ class AegisOrchestrator:
         if self.trace_callback:
             try:
                 self.trace_callback(event)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.exception("Error in trace_callback: %s", exc)
+                raise
         return event
 
     def _planner_node(self, state: AegisState) -> dict:
@@ -694,8 +698,9 @@ class AegisOrchestrator:
             if on_node_finish:
                 try:
                     on_node_finish(current_state)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.exception("Error in on_node_finish during run: %s", exc)
+                    raise
 
         return current_state
 
@@ -723,7 +728,8 @@ class AegisOrchestrator:
             if on_node_finish:
                 try:
                     on_node_finish(current_state)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.exception("Error in on_node_finish during run: %s", exc)
+                    raise
 
         return current_state
