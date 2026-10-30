@@ -25,8 +25,6 @@ from aegis.models.schemas import (
     HumanApprovalRequest,
     TaskStatus,
     TraceEvent,
-    VerificationMetrics,
-    VerificationResult,
 )
 from aegis.orchestration.router import (
     evaluate_quality_pass,
@@ -373,20 +371,8 @@ class AegisOrchestrator:
         results = state.get("specialist_results", {})
         v_res = state.get("verification_result")
         if v_res is None:
-            v_res = VerificationResult(
-                status="needs_revision",
-                claims=[],
-                metrics=VerificationMetrics(
-                    supported=0,
-                    contradicted=0,
-                    unsupported=0,
-                    no_evidence=0,
-                    supported_ratio=None,
-                    citation_coverage=None,
-                    numeric_mismatches=0,
-                    quality_pass=False,
-                ),
-            )
+            # Fail closed: the graph always runs verification first, so a missing result is a bug.
+            raise RuntimeError("verification_result is missing; verification_node must run before critic_node")
         retry_count = state.get("retry_count", 0)
         from aegis.config import get_settings
 
@@ -468,20 +454,7 @@ class AegisOrchestrator:
 
         v_res = state.get("verification_result")
         if v_res is None:
-            v_res = VerificationResult(
-                status="needs_revision",
-                claims=[],
-                metrics=VerificationMetrics(
-                    supported=0,
-                    contradicted=0,
-                    unsupported=0,
-                    no_evidence=0,
-                    supported_ratio=None,
-                    citation_coverage=None,
-                    numeric_mismatches=0,
-                    quality_pass=False,
-                ),
-            )
+            raise RuntimeError("verification_result is missing; verification_node must run before synthesizer_node")
 
         report = self.synthesizer_agent.execute(
             task_id=state["task_id"],

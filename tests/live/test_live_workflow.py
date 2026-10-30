@@ -195,7 +195,10 @@ def test_live_workflow_cmapss():
     csv_text = csv_path.read_text(encoding="utf-8")
 
     api_key = os.environ["ANTHROPIC_API_KEY"]
-    model = os.environ.get("AEGIS_MODEL", "claude-sonnet-5-5")
+    # No default: a forgotten env var must not silently run a pricier model.
+    model = os.environ.get("AEGIS_MODEL")
+    if not model:
+        pytest.skip("AEGIS_MODEL is not set")
     settings = Settings(provider="anthropic", model=model)
     provider = AnthropicProvider(model=model, api_key=api_key, settings=settings)
 
