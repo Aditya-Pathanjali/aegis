@@ -7,6 +7,7 @@ from aegis.agents.research import ResearchAgent
 from aegis.agents.synthesizer import SynthesizerAgent
 from aegis.agents.verification import VerificationAgent
 from aegis.models.schemas import (
+    AgentExecutionResult,
     AgentRole,
     CriticEvaluation,
     ExecutionPlan,
@@ -103,13 +104,17 @@ def test_verification_agent():
         subtask=SubTask(id="st", title="test", description="test", assigned_agent=AgentRole.DATA_ANALYST)
     )
     v_res = verifier.execute(specialist_results=[res], original_query="Analyze equipment")
-    assert v_res.status == "passed"
-    assert v_res.metrics.supported_ratio == 1.0
+    # Per Blocker 4: empty findings has status needs_revision, quality_pass False, None metrics
+    assert v_res.status == "needs_revision"
+    assert v_res.metrics.supported_ratio is None
+    assert v_res.metrics.quality_pass is False
     assert v_res.claims == []
 
 
 def test_critic_agent():
     from aegis.agents.critic import CriticRubricOutput
+    from aegis.agents.verification import JudgeVerdict
+    from aegis.models.schemas import EvidenceRef, ToolCallRecord
 
     rubric = CriticRubricOutput(
         answers_question=8.0,
@@ -120,18 +125,31 @@ def test_critic_agent():
         replan=False,
         guidance="Well substantiated analysis.",
     )
+    judge_pass = JudgeVerdict(verdict="supported", quote_span="12.5", rationale="Matches SQL")
     critic = CriticAgent(llm_provider=FakeLLM(responses=[rubric]))
-    verifier = VerificationAgent(llm_provider=FakeLLM())
-    out = SpecialistOutput(
-        summary="Data analysis output",
-        findings=[],
-        limitations=[],
+    verifier = VerificationAgent(llm_provider=FakeLLM(responses=[judge_pass]))
+    call_id = "call-analyst-1"
+    tool_rec = ToolCallRecord(
+        call_id=call_id,
+        tool_name="sql_query",
+        arguments={},
+        output={"pressure": 12.5},
+        execution_time_ms=5.0,
+        success=True,
     )
-    analyst = DataAnalystAgent(llm_provider=FakeLLM(responses=[fake_text("ok"), out]))
-    res = analyst.execute(
-        subtask=SubTask(id="st", title="test", description="test", assigned_agent=AgentRole.DATA_ANALYST)
+    finding = Finding(
+        statement="Hydraulic pressure was 12.5 bar.",
+        evidence=[EvidenceRef(kind="tool_call", ref_id=call_id)],
+    )
+    res = AgentExecutionResult(
+        subtask_id="st",
+        agent_role=AgentRole.DATA_ANALYST,
+        output_summary="Data analysis output",
+        findings=[finding],
+        tool_calls=[tool_rec],
     )
     v_res = verifier.execute(specialist_results=[res], original_query="Analyze")
+    assert v_res.metrics.quality_pass is True
     eval_res = critic.execute(specialist_results=[res], verification_result=v_res)
     assert eval_res.quality_pass is True
     assert eval_res.score == 8.0
