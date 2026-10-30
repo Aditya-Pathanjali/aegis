@@ -9,6 +9,16 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 from aegis.llm.types import Usage
+from aegis.models.llm_outputs import (
+    CriticRubricOutput,
+    EvidenceRef,
+    Finding,
+    JudgeVerdict,
+    PlannedSubtask,
+    PlanOutput,
+    SpecialistOutput,
+    SynthesizerOutput,
+)
 
 
 class AgentRole(str, Enum):
@@ -39,22 +49,6 @@ class ApprovalAction(str, Enum):
     APPROVE = "approve"
     REJECT = "reject"
     REQUEST_REANALYSIS = "request_reanalysis"
-
-
-class EvidenceRef(BaseModel):
-    kind: Literal["tool_call", "chunk", "tool_output"]
-    ref_id: str
-
-
-class Finding(BaseModel):
-    statement: str
-    evidence: List[EvidenceRef] = Field(default_factory=list)
-
-
-class SpecialistOutput(BaseModel):
-    summary: str
-    findings: List[Finding] = Field(default_factory=list)
-    limitations: List[str] = Field(default_factory=list)
 
 
 class ToolCallRecord(BaseModel):
@@ -187,18 +181,6 @@ class CriticEvaluation(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-class SynthesizerOutput(BaseModel):
-    title: str
-    final_finding: str
-    key_conclusions: List[str] = Field(default_factory=list)
-    actionable_recommendations: List[str] = Field(default_factory=list)
-    evidence_summary: str = ""
-    data_analysis_summary: str = ""
-    recommended_action: str = ""
-    urgency: str = "medium"
-    operational_steps: List[str] = Field(default_factory=list)
-
-
 class ExecutiveSummary(BaseModel):
     final_finding: str
     key_conclusions: List[str] = Field(default_factory=list)
@@ -296,3 +278,34 @@ class TaskResponse(BaseModel):
     trace_events: List[TraceEvent] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+__all__ = [
+    "AgentExecutionResult",
+    "AgentRole",
+    "ApprovalAction",
+    "ClaimVerification",
+    "CriticEvaluation",
+    "CriticRubricOutput",
+    "EvidenceRef",
+    "ExecutionPlan",
+    "ExecutiveSummary",
+    "FinalReport",
+    "Finding",
+    "HumanApprovalRequest",
+    "JudgeVerdict",
+    "PlanOutput",
+    "PlannedSubtask",
+    "SpecialistOutput",
+    "SubTask",
+    "Subtask",
+    "SynthesizerOutput",
+    "TaskResponse",
+    "TaskStatus",
+    "TaskSubmission",
+    "ToolCallRecord",
+    "TraceEvent",
+    "VerificationMetrics",
+    "VerificationResult",
+]
+

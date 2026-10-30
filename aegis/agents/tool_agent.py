@@ -19,11 +19,11 @@ from aegis.llm.types import (
     ToolUseBlock,
     Usage,
 )
+from aegis.models.llm_outputs import SpecialistOutput
 from aegis.models.schemas import (
     AgentExecutionResult,
     AgentRole,
     EvidenceRef,
-    SpecialistOutput,
     ToolCallRecord,
 )
 

@@ -1,5 +1,11 @@
 """Aegis models package."""
 
+from aegis.models.llm_outputs import (
+    CriticRubricOutput,
+    JudgeVerdict,
+    PlannedSubtask,
+    PlanOutput,
+)
 from aegis.models.schemas import (
     AgentExecutionResult,
     AgentRole,
@@ -33,6 +39,10 @@ __all__ = [
     "Finding",
     "SpecialistOutput",
     "SynthesizerOutput",
+    "JudgeVerdict",
+    "CriticRubricOutput",
+    "PlannedSubtask",
+    "PlanOutput",
     "ToolCallRecord",
     "SubTask",
     "Subtask",

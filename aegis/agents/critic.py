@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field
-
 from aegis.agents.base import BaseAgent
 from aegis.llm.pricing import calculate_cost
 from aegis.llm.types import Message, TextBlock
+from aegis.models.llm_outputs import CriticRubricOutput
 from aegis.models.schemas import (
     AgentExecutionResult,
     AgentRole,
@@ -19,17 +18,6 @@ from aegis.models.schemas import (
 if TYPE_CHECKING:
     from aegis.llm.base import LLMProvider
     from aegis.tools.registry import ToolRegistry
-
-
-class CriticRubricOutput(BaseModel):
-    answers_question: float = Field(ge=0.0, le=10.0, description="Score 0-10 for addressing the engineering question.")
-    uses_task_data: float = Field(ge=0.0, le=10.0, description="Score 0-10 for utilizing task data and evidence.")
-    claims_verified: float = Field(ge=0.0, le=10.0, description="Score 0-10 for factual consistency and verification.")
-    limitations_stated: float = Field(ge=0.0, le=10.0, description="Score 0-10 for documenting limitations.")
-    retry_subtask_ids: List[str] = Field(default_factory=list, description="IDs of subtasks requiring targeted retry.")
-    replan: bool = Field(default=False, description="Whether the plan decomposition is fundamentally flawed.")
-    guidance: str = Field(default="", description="Concrete guidance for retry or replan.")
-    issues_found: List[str] = Field(default_factory=list, description="List of flaws or gaps identified.")
 
 
 class CriticAgent(BaseAgent):
