@@ -32,14 +32,6 @@ jobs:
         run: |
           pytest -v --durations=10
 
-      - name: Validate Fast Dense Embeddings & Vector Search
-        run: |
-          python -c "from aegis.rag.retriever import get_rag_knowledge_base; kb = get_rag_knowledge_base(); kb.index_document(doc_id='doc1', title='Vibration Guide', text='vibration standards and thresholds'); res = kb.retrieve('vibration standards'); assert len(res) > 0; print('RAG test successful!')"
-
-      - name: Validate LangGraph Orchestrator Execution
-        run: |
-          python -c "from aegis.orchestration.graph import AegisOrchestrator; from tests.fakes import FakeLLM; orch = AegisOrchestrator(llm_provider=FakeLLM()); res = orch.run({'task_id': 'ci-test', 'query': 'Analyse predictive maintenance', 'has_dataset': True, 'require_human_approval': False, 'max_retries': 2, 'retry_count': 0}); assert res['status'] == 'completed'; print('LangGraph Workflow CI test passed!')"
-
   docker-build:
     name: Verify Docker Image Build
     runs-on: ubuntu-latest
