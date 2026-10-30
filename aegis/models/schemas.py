@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from aegis.llm.types import Usage
 
@@ -126,14 +126,30 @@ class AgentExecutionResult(BaseModel):
 
 class ClaimVerification(BaseModel):
     claim: str
-    is_supported: bool
+    status: Literal["supported", "contradicted", "unsupported", "no_evidence"]
+    is_supported: bool = False
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     evidence_sources: List[str] = Field(default_factory=list)
+    quote_span: Optional[str] = None
+    numeric_mismatch: bool = False
     contradiction_detected: bool = False
     notes: str = ""
 
+    @model_validator(mode="after")
+    def derive_is_supported(self) -> ClaimVerification:
+        self.is_supported = (self.status == "supported")
+        return self
+
 
 class VerificationMetrics(BaseModel):
+    supported: int = 0
+    contradicted: int = 0
+    unsupported: int = 0
+    no_evidence: int = 0
+    supported_ratio: Optional[float] = None
+    citation_coverage: Optional[float] = None
+    numeric_mismatches: int = 0
+    quality_pass: bool = False
     evidence_coverage: float = 0.0
     source_quality: float = 0.0
     claim_consistency: float = 0.0
@@ -149,11 +165,16 @@ class VerificationResult(BaseModel):
     unsupported_claims: List[str] = Field(default_factory=list)
     audit_notes: str = ""
     verification_time_seconds: float = 0.0
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CriticEvaluation(BaseModel):
     quality_pass: bool = True
     score: Optional[float] = Field(default=None, ge=0.0, le=10.0)
+    rubric_scores: Dict[str, float] = Field(default_factory=dict)
+    retry_subtask_ids: List[str] = Field(default_factory=list)
+    replan: bool = False
+    guidance: str = ""
     issues_found: List[str] = Field(default_factory=list)
     missing_evidence: List[str] = Field(default_factory=list)
     weak_reasoning: List[str] = Field(default_factory=list)
@@ -161,6 +182,18 @@ class CriticEvaluation(BaseModel):
     critique_summary: str = ""
     retry_recommendations: Optional[str] = None
     target_subtask_for_retry: Optional[str] = None
+
+
+class SynthesizerOutput(BaseModel):
+    title: str
+    final_finding: str
+    key_conclusions: List[str] = Field(default_factory=list)
+    actionable_recommendations: List[str] = Field(default_factory=list)
+    evidence_summary: str = ""
+    data_analysis_summary: str = ""
+    recommended_action: str = ""
+    urgency: str = "medium"
+    operational_steps: List[str] = Field(default_factory=list)
 
 
 class ExecutiveSummary(BaseModel):

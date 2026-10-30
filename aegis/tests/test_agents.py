@@ -7,6 +7,7 @@ from aegis.agents.research import ResearchAgent
 from aegis.agents.synthesizer import SynthesizerAgent
 from aegis.agents.verification import VerificationAgent
 from aegis.models.schemas import (
+    AgentExecutionResult,
     AgentRole,
     CriticEvaluation,
     ExecutionPlan,
@@ -103,61 +104,87 @@ def test_verification_agent():
         subtask=SubTask(id="st", title="test", description="test", assigned_agent=AgentRole.DATA_ANALYST)
     )
     v_res = verifier.execute(specialist_results=[res], original_query="Analyze equipment")
-    assert v_res.status == "not_implemented"
-    assert v_res.metrics.overall_reliability == 0.0
+    # Per Blocker 4: empty findings has status needs_revision, quality_pass False, None metrics
+    assert v_res.status == "needs_revision"
+    assert v_res.metrics.supported_ratio is None
+    assert v_res.metrics.quality_pass is False
     assert v_res.claims == []
 
 
 def test_critic_agent():
-    critic = CriticAgent(llm_provider=FakeLLM())
-    verifier = VerificationAgent(llm_provider=FakeLLM())
-    out = SpecialistOutput(
-        summary="Data analysis output",
-        findings=[],
-        limitations=[],
+    from aegis.agents.critic import CriticRubricOutput
+    from aegis.agents.verification import JudgeVerdict
+    from aegis.models.schemas import EvidenceRef, ToolCallRecord
+
+    rubric = CriticRubricOutput(
+        answers_question=8.0,
+        uses_task_data=8.0,
+        claims_verified=8.0,
+        limitations_stated=8.0,
+        retry_subtask_ids=[],
+        replan=False,
+        guidance="Well substantiated analysis.",
     )
-    analyst = DataAnalystAgent(llm_provider=FakeLLM(responses=[fake_text("ok"), out]))
-    res = analyst.execute(
-        subtask=SubTask(id="st", title="test", description="test", assigned_agent=AgentRole.DATA_ANALYST)
+    judge_pass = JudgeVerdict(verdict="supported", quote_span="12.5", rationale="Matches SQL")
+    critic = CriticAgent(llm_provider=FakeLLM(responses=[rubric]))
+    verifier = VerificationAgent(llm_provider=FakeLLM(responses=[judge_pass]))
+    call_id = "call-analyst-1"
+    tool_rec = ToolCallRecord(
+        call_id=call_id,
+        tool_name="sql_query",
+        arguments={},
+        output={"pressure": 12.5},
+        execution_time_ms=5.0,
+        success=True,
+    )
+    finding = Finding(
+        statement="Hydraulic pressure was 12.5 bar.",
+        evidence=[EvidenceRef(kind="tool_call", ref_id=call_id)],
+    )
+    res = AgentExecutionResult(
+        subtask_id="st",
+        agent_role=AgentRole.DATA_ANALYST,
+        output_summary="Data analysis output",
+        findings=[finding],
+        tool_calls=[tool_rec],
     )
     v_res = verifier.execute(specialist_results=[res], original_query="Analyze")
+    assert v_res.metrics.quality_pass is True
     eval_res = critic.execute(specialist_results=[res], verification_result=v_res)
     assert eval_res.quality_pass is True
-    assert eval_res.critique_summary == "Critic not implemented yet (PR 6)"
-    assert eval_res.score == 0.0
+    assert eval_res.score == 8.0
+    assert eval_res.guidance == "Well substantiated analysis."
 
 
 def test_synthesizer_agent():
-    synthesizer = SynthesizerAgent(llm_provider=FakeLLM())
+    from aegis.models.schemas import SynthesizerOutput
+
+    draft = SynthesizerOutput(
+        title="Equipment Health Inspection",
+        final_finding="Telemetry and research confirm operational integrity.",
+        key_conclusions=["All measured parameters within tolerance."],
+        actionable_recommendations=["Maintain regular inspection cadence."],
+    )
+    synthesizer = SynthesizerAgent(llm_provider=FakeLLM(responses=[draft]))
     report = synthesizer.execute(
         task_id="t-synth",
         query="Inspect system",
         specialist_results=[],
         verification_result=VerificationResult(
-            status="not_implemented",
+            status="passed",
             claims=[],
-            metrics=VerificationMetrics(
-                evidence_coverage=0.0,
-                source_quality=0.0,
-                claim_consistency=0.0,
-                temporal_validity=0.0,
-                hallucination_risk=0.0,
-                overall_reliability=0.0,
-            ),
+            metrics=VerificationMetrics(quality_pass=True),
             unsupported_claims=[],
         ),
         critic_evaluation=CriticEvaluation(
             quality_pass=True,
-            score=0.0,
-            issues_found=[],
-            missing_evidence=[],
-            weak_reasoning=[],
-            contradictions=[],
-            critique_summary="Critic not implemented yet (PR 6)",
+            score=8.0,
+            guidance="Approved",
         ),
         trace_events=[],
     )
-    assert report.executive_summary.final_finding == ""
-    assert report.executive_summary.key_conclusions == []
-    assert report.executive_summary.actionable_recommendations == []
-    assert report.limitations == ["Synthesizer agent not implemented yet (PR 5/6)"]
+    assert report.executive_summary.final_finding == "Telemetry and research confirm operational integrity."
+    assert len(report.executive_summary.key_conclusions) == 1
+    assert len(report.executive_summary.actionable_recommendations) == 1
+    assert report.executive_summary.overall_confidence is None
+    assert report.executive_summary.business_impact == ""

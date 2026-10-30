@@ -104,11 +104,12 @@ class AegisOrchestrator:
                 pass
         return event
 
-    def _planner_node(self, state: AegisState) -> AegisState:
+    def _planner_node(self, state: AegisState) -> dict:
         t0 = time.perf_counter()
         query = state["query"]
         has_dataset = state.get("has_dataset", False)
-        critic_feedback = state.get("critic_evaluation").retry_recommendations if state.get("critic_evaluation") else None
+        critic = state.get("critic_evaluation")
+        critic_feedback = critic.guidance if (critic and critic.guidance) else None
 
         self._log_trace(
             state=state,
@@ -146,44 +147,77 @@ class AegisOrchestrator:
             model=model_name,
         )
 
-        state["plan"] = plan
-        state["current_subtask_index"] = 0
-        state["status"] = TaskStatus.EXECUTING
-        if "specialist_results" not in state or state["specialist_results"] is None:
-            state["specialist_results"] = []
-        return state
+        # Replan clears specialist results; normal run initializes empty dict
+        is_replan = critic is not None and critic.replan
+        existing_results = state.get("specialist_results")
+        if is_replan or existing_results is None:
+            spec_dict = {}
+        elif isinstance(existing_results, dict):
+            spec_dict = dict(existing_results)
+        else:
+            spec_dict = {r.subtask_id: r for r in existing_results}
 
-    def _specialist_node(self, state: AegisState) -> AegisState:
+        return {
+            "plan": plan,
+            "current_subtask_index": 0,
+            "pending_retry_subtasks": None,
+            "specialist_results": spec_dict,
+            "status": TaskStatus.EXECUTING,
+            "trace_events": state.get("trace_events", []),
+        }
+
+    def _specialist_node(self, state: AegisState) -> dict:
         t0 = time.perf_counter()
         plan = state["plan"]
         idx = state.get("current_subtask_index", 0)
 
-        if not plan or idx >= len(plan.subtasks):
-            return state
+        # Normalize specialist_results to dict
+        existing_results = state.get("specialist_results")
+        if isinstance(existing_results, dict):
+            specialist_dict = dict(existing_results)
+        elif isinstance(existing_results, list):
+            specialist_dict = {r.subtask_id: r for r in existing_results}
+        else:
+            specialist_dict = {}
 
-        subtask = plan.subtasks[idx]
+        pending_retries = state.get("pending_retry_subtasks")
+        is_retry = pending_retries is not None and len(pending_retries) > 0
+
+        if is_retry:
+            target_id = pending_retries[0]
+            subtask = next((st for st in plan.subtasks if st.id == target_id), None)
+            if subtask is None:
+                return {"pending_retry_subtasks": pending_retries[1:]}
+        else:
+            if not plan or idx >= len(plan.subtasks):
+                return {}
+            subtask = plan.subtasks[idx]
+
         agent_role = subtask.assigned_agent
 
         self._log_trace(
             state=state,
             agent_role=agent_role,
             event_type="agent_start",
-            message=f"Dispatched {agent_role.value.capitalize()} Agent to execute: '{subtask.title}'",
+            message=f"Dispatched {agent_role.value.capitalize()} Agent to execute: '{subtask.title or subtask.id}'",
             details={"required_tools": subtask.required_tools},
         )
 
-        # Prepare context including upstream outputs
+        # Prepare context including upstream outputs and retry guidance
         upstream_parts: list[str] = []
         for dep_id in subtask.depends_on:
-            for past_res in state.get("specialist_results", []):
-                if past_res.subtask_id == dep_id:
-                    finding_lines = "\n".join(f"- {f.statement}" for f in past_res.findings)
-                    upstream_parts.append(
-                        f"Subtask '{dep_id}' output:\nSummary: {past_res.output_summary}\nFindings:\n{finding_lines}"
-                    )
+            past_res = specialist_dict.get(dep_id)
+            if past_res:
+                finding_lines = "\n".join(f"- {f.statement}" for f in past_res.findings)
+                upstream_parts.append(
+                    f"Subtask '{dep_id}' output:\nSummary: {past_res.output_summary}\nFindings:\n{finding_lines}"
+                )
+
+        critic_guidance = state.get("critic_guidance", "") if is_retry else ""
         context = {
             "content": state.get("dataset_content"),
             "upstream_context": "\n\n".join(upstream_parts),
+            "critic_guidance": critic_guidance,
         }
 
         # Dynamic routing to specialist agent
@@ -192,7 +226,6 @@ class AegisOrchestrator:
         elif agent_role == AgentRole.DATA_ANALYST:
             result = self.data_analyst_agent.execute(subtask=subtask, context=context)
         else:
-            # Fallback to research
             result = self.research_agent.execute(subtask=subtask, context=context)
 
         # Log tool calls
@@ -209,7 +242,7 @@ class AegisOrchestrator:
         subtask.status = "completed"
         subtask.output = result.output_summary
         subtask.tool_calls = result.tool_calls
-        state["specialist_results"].append(result)
+        specialist_dict[subtask.id] = result
 
         duration = (time.perf_counter() - t0) * 1000.0
         in_tok = result.usage.input_tokens if result.usage else 0
@@ -232,12 +265,21 @@ class AegisOrchestrator:
             model=model_name,
         )
 
-        state["current_subtask_index"] = idx + 1
-        return state
+        if is_retry:
+            return {
+                "specialist_results": specialist_dict,
+                "pending_retry_subtasks": pending_retries[1:],
+                "trace_events": state.get("trace_events", []),
+            }
+        else:
+            return {
+                "specialist_results": specialist_dict,
+                "current_subtask_index": idx + 1,
+                "trace_events": state.get("trace_events", []),
+            }
 
-    def _verification_node(self, state: AegisState) -> AegisState:
+    def _verification_node(self, state: AegisState) -> dict:
         t0 = time.perf_counter()
-        state["status"] = TaskStatus.VERIFYING
         self._log_trace(
             state=state,
             agent_role=AgentRole.VERIFICATION,
@@ -245,8 +287,8 @@ class AegisOrchestrator:
             message="Verification Agent auditing technical claims and cross-referencing RAG standards...",
         )
 
-        results = state.get("specialist_results", [])
-        v_res = self.verification_agent.execute(specialist_results=results, original_query=state["query"])
+        results = state.get("specialist_results", {})
+        v_res = self.verification_agent.execute(specialist_results=results, original_query=state.get("query", ""))
 
         duration = (time.perf_counter() - t0) * 1000.0
         self._log_trace(
@@ -254,20 +296,22 @@ class AegisOrchestrator:
             agent_role=AgentRole.VERIFICATION,
             event_type="verify",
             message=(
-                f"Verification completed. Reliability: {v_res.metrics.overall_reliability}%, "
-                f"Evidence Coverage: {v_res.metrics.evidence_coverage}%, Hallucination Risk: {v_res.metrics.hallucination_risk}%"
+                f"Verification completed. Supported: {v_res.metrics.supported}/{len(v_res.claims)}, "
+                f"Contradictions: {v_res.metrics.contradicted}, Discrepancies: {v_res.metrics.numeric_mismatches}"
             ),
             details=v_res.metrics.model_dump(),
             duration_ms=duration,
             token_usage=0,
         )
 
-        state["verification_result"] = v_res
-        return state
+        return {
+            "verification_result": v_res,
+            "status": TaskStatus.VERIFYING,
+            "trace_events": state.get("trace_events", []),
+        }
 
-    def _critic_node(self, state: AegisState) -> AegisState:
+    def _critic_node(self, state: AegisState) -> dict:
         t0 = time.perf_counter()
-        state["status"] = TaskStatus.CRITIQUING
         self._log_trace(
             state=state,
             agent_role=AgentRole.CRITIC,
@@ -275,10 +319,13 @@ class AegisOrchestrator:
             message="Critic Agent reviewing findings for contradictions, evidence gaps, and reasoning rigor...",
         )
 
-        results = state.get("specialist_results", [])
+        results = state.get("specialist_results", {})
         v_res = state.get("verification_result")
         retry_count = state.get("retry_count", 0)
-        max_retries = state.get("max_retries", 2)
+        from aegis.config import get_settings
+
+        cfg = get_settings()
+        max_retries = state.get("max_retries", getattr(cfg, "max_agent_retries", 2))
 
         critic_eval = self.critic_agent.execute(
             specialist_results=results,
@@ -299,30 +346,37 @@ class AegisOrchestrator:
             token_usage=0,
         )
 
-        state["critic_evaluation"] = critic_eval
-        return state
+        return {
+            "critic_evaluation": critic_eval,
+            "status": TaskStatus.CRITIQUING,
+            "trace_events": state.get("trace_events", []),
+        }
 
-    def _retry_node(self, state: AegisState) -> AegisState:
-        state["status"] = TaskStatus.RETRYING
-        state["retry_count"] = state.get("retry_count", 0) + 1
+    def _retry_node(self, state: AegisState) -> dict:
+        retry_count = state.get("retry_count", 0) + 1
         critic = state.get("critic_evaluation")
+        targeted_subtasks = list(critic.retry_subtask_ids) if critic and critic.retry_subtask_ids else []
+        guidance = critic.guidance if critic else ""
 
         self._log_trace(
             state=state,
             agent_role=AgentRole.CRITIC,
             event_type="retry",
-            message=f"Initiating Retry Cycle #{state['retry_count']}. Guidance: {critic.retry_recommendations if critic else 'Recalibrate'}",
-            details={"retry_count": state["retry_count"]},
+            message=f"Initiating Targeted Retry #{retry_count} for subtasks: {targeted_subtasks}. Guidance: {guidance}",
+            details={"retry_count": retry_count, "targeted_subtasks": targeted_subtasks},
             duration_ms=10.0,
         )
 
-        # Reset index to re-execute targeted subtasks
-        state["current_subtask_index"] = 0
-        return state
+        return {
+            "status": TaskStatus.RETRYING,
+            "retry_count": retry_count,
+            "pending_retry_subtasks": targeted_subtasks,
+            "critic_guidance": guidance,
+            "trace_events": state.get("trace_events", []),
+        }
 
-    def _synthesizer_node(self, state: AegisState) -> AegisState:
+    def _synthesizer_node(self, state: AegisState) -> dict:
         t0 = time.perf_counter()
-        state["status"] = TaskStatus.SYNTHESIZING
         self._log_trace(
             state=state,
             agent_role=AgentRole.SYNTHESIZER,
@@ -330,50 +384,62 @@ class AegisOrchestrator:
             message="Synthesizer Agent assembling verified telemetry, evidence, and recommendations into final report...",
         )
 
+        from aegis.config import get_settings
+
+        cfg = get_settings()
+        max_retries = state.get("max_retries", getattr(cfg, "max_agent_retries", 2))
+
         report = self.synthesizer_agent.execute(
             task_id=state["task_id"],
             query=state["query"],
-            specialist_results=state.get("specialist_results", []),
+            specialist_results=state.get("specialist_results", {}),
             verification_result=state.get("verification_result"),
             critic_evaluation=state.get("critic_evaluation"),
             trace_events=state.get("trace_events", []),
             retries_count=state.get("retry_count", 0),
+            max_retries=max_retries,
         )
 
         duration = (time.perf_counter() - t0) * 1000.0
-        conf = report.executive_summary.overall_confidence
-        conf_str = f"{conf * 100:.1f}%" if conf is not None else "N/A"
         self._log_trace(
             state=state,
             agent_role=AgentRole.SYNTHESIZER,
             event_type="agent_finish",
-            message=f"Final Report compiled successfully. Executive confidence: {conf_str}.",
+            message=f"Final Report compiled successfully: '{report.title}'.",
             details={"title": report.title},
             duration_ms=duration,
             token_usage=0,
         )
 
-        state["final_report"] = report
-        state["status"] = TaskStatus.COMPLETED
-        return state
+        return {
+            "final_report": report,
+            "status": TaskStatus.COMPLETED,
+            "trace_events": state.get("trace_events", []),
+        }
 
-    def _human_gate_node(self, state: AegisState) -> AegisState:
+    def _human_gate_node(self, state: AegisState) -> dict:
         report = state.get("final_report")
         conf = report.executive_summary.overall_confidence if report else None
         actions = list(report.executive_summary.actionable_recommendations) if report else []
+        v_res = state.get("verification_result")
+        critic = state.get("critic_evaluation")
+        has_quality_failure = (
+            (v_res and not v_res.metrics.quality_pass)
+            or (critic and not critic.quality_pass)
+        )
 
-        # Create Human Approval Request
         approval_req = HumanApprovalRequest(
             task_id=state["task_id"],
             required=True,
             status="pending",
-            reason="Human approval required before finalizing actions.",
-            risk_level="high" if (conf is not None and conf < 0.75) else "medium",
+            reason=(
+                "Quality failure detected (no verified findings): manual review required."
+                if has_quality_failure
+                else "Human approval required before finalizing actions."
+            ),
+            risk_level="high" if (has_quality_failure or (conf is not None and conf < 0.75)) else "medium",
             proposed_actions=actions,
         )
-
-        state["human_approval"] = approval_req
-        state["status"] = TaskStatus.WAITING_APPROVAL
 
         self._log_trace(
             state=state,
@@ -382,7 +448,11 @@ class AegisOrchestrator:
             message="Workflow paused at Human Review Gate awaiting operator sign-off.",
             details=approval_req.model_dump(),
         )
-        return state
+        return {
+            "human_approval": approval_req,
+            "status": TaskStatus.WAITING_APPROVAL,
+            "trace_events": state.get("trace_events", []),
+        }
 
     def _build_graph(self) -> Any:
         workflow = StateGraph(AegisState)
@@ -419,6 +489,7 @@ class AegisOrchestrator:
             {
                 "synthesizer_node": "synthesizer_node",
                 "retry_node": "retry_node",
+                "planner_node": "planner_node",
             },
         )
 

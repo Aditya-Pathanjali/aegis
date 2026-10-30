@@ -2,12 +2,14 @@
 
 import time
 
+from aegis.agents.critic import CriticRubricOutput
 from aegis.models.schemas import (
     AgentRole,
     ApprovalAction,
     ExecutionPlan,
     SpecialistOutput,
     SubTask,
+    SynthesizerOutput,
     TaskStatus,
     TaskSubmission,
 )
@@ -41,7 +43,16 @@ def test_orchestrator_complete_run():
     )
     res_1 = SpecialistOutput(summary="Research done.", findings=[], limitations=[])
     res_2 = SpecialistOutput(summary="Data analysis done.", findings=[], limitations=[])
-    fake_llm = FakeLLM(responses=[plan, fake_text("Done."), res_1, fake_text("Done."), res_2])
+    critic_rubric = CriticRubricOutput(
+        answers_question=8.0, uses_task_data=8.0, claims_verified=8.0, limitations_stated=8.0
+    )
+    synth_draft = SynthesizerOutput(
+        title="Feasibility Assessment",
+        final_finding="Feasible maintenance schedule confirmed.",
+        key_conclusions=["All subsystems operational."],
+        actionable_recommendations=["Proceed with planned maintenance."],
+    )
+    fake_llm = FakeLLM(responses=[plan, fake_text("Done."), res_1, fake_text("Done."), res_2, critic_rubric, synth_draft])
     orchestrator = AegisOrchestrator(llm_provider=fake_llm)
     initial_state: AegisState = {
         "task_id": "test-orch-1",
@@ -56,7 +67,7 @@ def test_orchestrator_complete_run():
     assert result["status"] == TaskStatus.COMPLETED
     assert result["final_report"] is not None
     assert len(result["specialist_results"]) == 2
-    assert result["verification_result"].status == "not_implemented"
+    assert result["verification_result"].status == "passed"
     assert result["critic_evaluation"].quality_pass is True
 
 
@@ -76,7 +87,18 @@ def test_human_gate_triggering_and_approval():
         ],
     )
     res_1 = SpecialistOutput(summary="Research done.", findings=[], limitations=[])
-    service = OrchestratorService(llm_provider=FakeLLM(responses=[plan, fake_text("Done."), res_1]))
+    critic_rubric = CriticRubricOutput(
+        answers_question=8.0, uses_task_data=8.0, claims_verified=8.0, limitations_stated=8.0
+    )
+    synth_draft = SynthesizerOutput(
+        title="Gate Assessment",
+        final_finding="Equipment sign-off needed.",
+        key_conclusions=[],
+        actionable_recommendations=[],
+    )
+    service = OrchestratorService(
+        llm_provider=FakeLLM(responses=[plan, fake_text("Done."), res_1, critic_rubric, synth_draft])
+    )
     task_id = service.submit_task(
         TaskSubmission(
             query="Analyze equipment with mandatory sign-off.",
