@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 CMAPSS_URL = "https://data.nasa.gov/docs/legacy/CMAPSSData.zip"
+# Note: The SHA-256 below is the hash of the file downloaded from data.nasa.gov, not one published by NASA.
 EXPECTED_SHA256 = "74bef434a34db25c7bf72e668ea4cd52afe5f2cf8e44367c55a82bfd91a5a34f"
 
 COLUMN_NAMES = [

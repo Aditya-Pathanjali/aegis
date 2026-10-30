@@ -1,6 +1,6 @@
 ---
 title: Engineering Vibration Standards Outline
-source_url: https://standards.iso.org/standards/vibration
+source_url: ""  # TODO: add verified standard URL
 ---
 
 # Engineering Vibration Standards (TODO Outline)

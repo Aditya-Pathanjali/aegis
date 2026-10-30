@@ -117,3 +117,28 @@ def test_postgres_failure_raises():
     # Connecting to an invalid port/host must raise without silent fallback
     with pytest.raises((psycopg.OperationalError, Exception)):
         PostgresVectorStore(connection_url="postgresql://invalid:invalid@127.0.0.1:54329/nonexistent_db")
+
+
+def test_ingest_malformed_frontmatter_raises_with_filename(tmp_path):
+    corpus_dir = tmp_path / "corpus_bad"
+    corpus_dir.mkdir()
+
+    bad_file = corpus_dir / "bad_syntax.md"
+    bad_file.write_text(
+        "---\ntitle: [Unclosed list\nkey: value\n---\n\nBody text here",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"Malformed front-matter in '.*bad_syntax\.md'"):
+        ingest_corpus(corpus_dir)
+
+    # Test non-dict front-matter (e.g. YAML scalar or list)
+    scalar_file = corpus_dir / "scalar_meta.md"
+    scalar_file.write_text(
+        "---\njust a string not a mapping\n---\n\nBody text",
+        encoding="utf-8",
+    )
+    bad_file.unlink()  # remove first bad file to test second
+
+    with pytest.raises(ValueError, match=r"Malformed front-matter in '.*scalar_meta\.md'"):
+        ingest_corpus(corpus_dir)

@@ -1,6 +1,6 @@
 ---
 title: Turbofan Fleet Maintenance and Degradation Modeling Outline
-source_url: https://ntrs.nasa.gov/citations/phm2008
+source_url: ""  # TODO: add verified standard URL
 ---
 
 # Turbofan Fleet Maintenance and Degradation Modeling (TODO Outline)

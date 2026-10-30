@@ -14,8 +14,11 @@ from aegis.rag.chunker import DocumentChunk, DocumentChunker
 from aegis.rag.retriever import RAGKnowledgeBase, get_rag_knowledge_base
 
 
-def parse_markdown_with_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
-    """Extracts front-matter metadata and body from a markdown document."""
+def parse_markdown_with_frontmatter(content: str, file_path: str | Path = "<unknown>") -> Tuple[Dict[str, Any], str]:
+    """Extracts front-matter metadata and body from a markdown document.
+
+    Raises ValueError with the file name if front-matter is malformed.
+    """
     frontmatter: Dict[str, Any] = {}
     body = content
 
@@ -26,14 +29,14 @@ def parse_markdown_with_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
         body = match.group(2).strip()
         try:
             parsed = yaml.safe_load(raw_meta)
-            if isinstance(parsed, dict):
-                frontmatter = parsed
-        except Exception:
-            # Fallback simple line parser if YAML parsing fails
-            for line in raw_meta.splitlines():
-                if ":" in line:
-                    k, v = line.split(":", 1)
-                    frontmatter[k.strip()] = v.strip().strip("\"'")
+        except Exception as e:
+            raise ValueError(f"Malformed front-matter in '{file_path}': {e}") from e
+        if parsed is not None and not isinstance(parsed, dict):
+            raise ValueError(
+                f"Malformed front-matter in '{file_path}': expected YAML mapping, got {type(parsed).__name__}"
+            )
+        if isinstance(parsed, dict):
+            frontmatter = parsed
 
     return frontmatter, body
 
@@ -57,7 +60,7 @@ def ingest_corpus(
     md_files = sorted(list(path.rglob("*.md")))
     for file_path in md_files:
         content = file_path.read_text(encoding="utf-8")
-        meta, body = parse_markdown_with_frontmatter(content)
+        meta, body = parse_markdown_with_frontmatter(content, file_path=file_path)
 
         doc_id = file_path.stem
         title = meta.get("title", doc_id)
