@@ -79,10 +79,6 @@ def test_tripwire_no_domain_content_in_agents_and_orchestration():
                     content = file_path.read_text(encoding="utf-8", errors="ignore")
                     lines = content.splitlines()
                     for line_no, line in enumerate(lines, start=1):
-                        # TODO(PR3/PR4): Replace pre-loaded sample dataset and static SQL seed in routes.py with dynamic per-task uploads
-                        if file_path.name == "routes.py" and 27 <= line_no <= 67:
-                            continue
-
                         for pattern in DOMAIN_TRIPWIRE_PATTERNS:
                             if pattern.lower() in line.lower():
                                 violations.append(

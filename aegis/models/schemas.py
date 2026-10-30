@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -70,7 +70,7 @@ class ExecutionPlan(BaseModel):
     subtasks: List[SubTask]
     estimated_complexity: str = "medium"  # low, medium, high
     rationale: str = ""
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class AgentExecutionResult(BaseModel):
@@ -135,7 +135,7 @@ class ExecutiveSummary(BaseModel):
 
 class TraceEvent(BaseModel):
     event_id: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     task_id: str
     agent_role: Optional[AgentRole] = None
     event_type: str  # task_start, agent_start, tool_call, agent_finish, verify, critic, retry, human_gate, complete, error
@@ -164,7 +164,7 @@ class FinalReport(BaseModel):
     total_tokens: int = 0
     total_cost_usd: Optional[float] = 0.0
     retries_count: int = 0
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class HumanApprovalRequest(BaseModel):
@@ -193,5 +193,5 @@ class TaskResponse(BaseModel):
     report: Optional[FinalReport] = None
     approval_request: Optional[HumanApprovalRequest] = None
     trace_events: List[TraceEvent] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

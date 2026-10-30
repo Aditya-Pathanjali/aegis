@@ -3,72 +3,80 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import pandas as pd
 
 from aegis.tools.base import BaseTool
 
+if TYPE_CHECKING:
+    from aegis.tools.context import TaskContext
+
+ALLOWED_SQLITE_ACTIONS = {
+    sqlite3.SQLITE_SELECT,
+    sqlite3.SQLITE_READ,
+    sqlite3.SQLITE_FUNCTION,
+}
+
+
+def _readonly_authorizer(action: int, arg1: Any, arg2: Any, dbname: Any, source: Any) -> int:
+    """Enforces strictly read-only SELECT operations; denies DDL and DML writes."""
+    if action in ALLOWED_SQLITE_ACTIONS:
+        return sqlite3.SQLITE_OK
+    return sqlite3.SQLITE_DENY
+
 
 class SQLQueryTool(BaseTool):
-    """Executes SQL queries on in-memory relational tables populated from datasets."""
+    """Executes read-only SQL queries on in-memory relational tables populated from task datasets."""
 
     name = "sql_query"
     description = (
-        "Executes analytical SQL queries (SELECT, aggregations, GROUP BY, window functions) "
-        "against structured telemetry and engineering tables in an in-memory SQLite database."
+        "Executes analytical read-only SQL queries (SELECT, aggregations, GROUP BY, window functions) "
+        "against the 'dataset' table in an isolated in-memory SQLite database."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "SQL query to execute"},
+            "sql": {
+                "type": "string",
+                "description": "Read-only SQL query (SELECT) to execute against the 'dataset' table",
+            },
         },
-        "required": ["query"],
+        "required": ["sql"],
     }
 
-    def __init__(self):
-        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
-        self._init_default_tables()
+    def __init__(self, context: Optional[TaskContext] = None):
+        self.context = context
+        if context is not None:
+            self.conn = context.sqlite_conn
+        else:
+            self.conn = sqlite3.connect(":memory:", check_same_thread=False)
 
-    def _init_default_tables(self) -> None:
-        """Seeds default sensor telemetry table for queries."""
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS sensor_telemetry (
-                timestamp TEXT,
-                vibration_rms_x REAL,
-                vibration_rms_y REAL,
-                bearing_temperature_c REAL,
-                operating_pressure_bar REAL,
-                shaft_speed_rpm INT,
-                status_flag TEXT
-            );
-        """)
-        # Insert sample industrial readings
-        sample_rows = [
-            ("2026-03-01 00:00:00", 1.2, 1.1, 58.2, 12.1, 1495, "NORMAL"),
-            ("2026-03-05 00:00:00", 1.8, 1.6, 62.4, 12.0, 1492, "NORMAL"),
-            ("2026-03-10 00:00:00", 2.9, 2.7, 69.1, 11.8, 1490, "WARNING"),
-            ("2026-03-15 00:00:00", 3.8, 3.5, 76.5, 11.5, 1482, "ALERT"),
-            ("2026-03-20 00:00:00", 5.2, 4.9, 84.3, 11.2, 1475, "CRITICAL"),
-        ]
-        cursor.executemany("""
-            INSERT INTO sensor_telemetry VALUES (?, ?, ?, ?, ?, ?, ?);
-        """, sample_rows)
-        self.conn.commit()
+        # Enforce read-only operations via authorizer
+        self.conn.set_authorizer(_readonly_authorizer)
 
     def load_dataframe(self, table_name: str, df: pd.DataFrame) -> None:
         """Loads a pandas dataframe into a relational table."""
-        df.to_sql(table_name, self.conn, if_exists="replace", index=False)
+        # Temporarily disable authorizer to load data into memory
+        self.conn.set_authorizer(None)
+        try:
+            df.to_sql(table_name, self.conn, if_exists="replace", index=False)
+        finally:
+            self.conn.set_authorizer(_readonly_authorizer)
 
-    def _run(self, query: str) -> Dict[str, Any]:
+    def _run(self, sql: Optional[str] = None, query: Optional[str] = None, **kwargs: Any) -> Dict[str, Any]:
+        sql_cmd = sql or query
+        if not sql_cmd or not sql_cmd.strip():
+            raise ValueError("No SQL query provided to execute.")
+
         cursor = self.conn.cursor()
-        cursor.execute(query)
+        cursor.execute(sql_cmd)
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
-        rows = cursor.fetchall()
+        rows = cursor.fetchmany(500)  # Capped at max 500 rows as required
+
         return {
             "columns": columns,
             "row_count": len(rows),
-            "rows": rows[:100],  # cap at 100 rows for response payload
-            "query": query,
+            "rows": rows,
+            "query": sql_cmd,
         }

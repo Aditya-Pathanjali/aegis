@@ -42,9 +42,16 @@ class AegisOrchestrator:
         llm_provider: Optional[LLMProvider] = None,
         tool_registry: Optional[ToolRegistry] = None,
         trace_callback: Optional[Callable[[TraceEvent], None]] = None,
+        task_context: Optional[Any] = None,
     ):
         self.llm = llm_provider or get_llm_provider()
-        self.tool_registry = tool_registry or get_tool_registry()
+        self.task_context = task_context
+        if tool_registry is not None:
+            self.tool_registry = tool_registry
+        elif task_context is not None and hasattr(ToolRegistry, "from_context"):
+            self.tool_registry = ToolRegistry.from_context(task_context)
+        else:
+            self.tool_registry = get_tool_registry()
         self.trace_callback = trace_callback
 
         # Initialize Agents
@@ -409,5 +416,12 @@ class AegisOrchestrator:
 
     def run(self, initial_state: AegisState) -> AegisState:
         """Executes the full compiled LangGraph workflow."""
-        result = self.graph.invoke(initial_state)
-        return result
+        try:
+            result = self.graph.invoke(initial_state)
+            return result
+        finally:
+            if hasattr(self, "task_context") and self.task_context is not None:
+                try:
+                    self.task_context.cleanup()
+                except Exception:
+                    pass

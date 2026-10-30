@@ -47,11 +47,18 @@ def test_python_sandbox_security_rejections():
 
 
 def test_sql_query_tool():
-    tool = SQLQueryTool()
-    res = tool.execute(query="SELECT status_flag, AVG(vibration_rms_x) FROM sensor_telemetry GROUP BY status_flag;")
+    import pandas as pd
+
+    from aegis.tools.context import TaskContext
+
+    df = pd.DataFrame({"status_flag": ["OK", "WARN"], "metric_val": [10.0, 20.0]})
+    ctx = TaskContext(dataset=df)
+    tool = SQLQueryTool(context=ctx)
+    res = tool.execute(sql="SELECT status_flag, AVG(metric_val) FROM dataset GROUP BY status_flag;")
     assert res.success is True
     assert res.data["row_count"] > 0
     assert "status_flag" in res.data["columns"]
+    ctx.cleanup()
 
 
 def test_tool_registry_permissions():

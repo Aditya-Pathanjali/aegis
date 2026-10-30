@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import threading
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Callable, Dict, List, Optional
+
+import pandas as pd
 
 from aegis.llm import LLMProvider, get_llm_provider
 from aegis.memory.state_store import TaskStateStore, get_state_store
@@ -20,7 +23,8 @@ from aegis.models.schemas import (
 )
 from aegis.orchestration.graph import AegisOrchestrator
 from aegis.orchestration.state import AegisState
-from aegis.tools.registry import get_tool_registry
+from aegis.tools.context import TaskContext
+from aegis.tools.registry import ToolRegistry
 
 
 class OrchestratorService:
@@ -90,13 +94,24 @@ class OrchestratorService:
         initial_state: AegisState,
         submission: TaskSubmission,
     ) -> None:
+        task_context: Optional[TaskContext] = None
         try:
             llm = self.llm or get_llm_provider()
+            df = None
+            if submission.dataset_content:
+                try:
+                    df = pd.read_csv(io.StringIO(submission.dataset_content))
+                except Exception:
+                    pass
+
+            task_context = TaskContext(dataset=df, task_id=task_id)
+            tool_reg = ToolRegistry.from_context(task_context)
 
             orchestrator = AegisOrchestrator(
                 llm_provider=llm,
-                tool_registry=get_tool_registry(),
+                tool_registry=tool_reg,
                 trace_callback=self._broadcast_event,
+                task_context=task_context,
             )
 
             final_state = orchestrator.run(initial_state)
@@ -116,6 +131,9 @@ class OrchestratorService:
                 )
             )
             self.state_store.save_state(task_id, state)
+        finally:
+            if task_context is not None:
+                task_context.cleanup()
 
     def resolve_human_approval(
         self,
@@ -131,7 +149,7 @@ class OrchestratorService:
         if not req:
             req = HumanApprovalRequest(task_id=task_id)
 
-        req.decided_at = datetime.utcnow()
+        req.decided_at = datetime.now(UTC)
         req.feedback = feedback
 
         if action == ApprovalAction.APPROVE:

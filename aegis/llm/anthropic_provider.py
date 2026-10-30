@@ -237,23 +237,6 @@ class AnthropicProvider:
             lat_1 = (time.perf_counter() - t0) * 1000.0
             validation_error_str = str(e)
             raw_text_1 = getattr(e, "raw_text", str(e))
-            resp_obj = getattr(e, "response", None)
-            if resp_obj is not None:
-                usage_obj = getattr(resp_obj, "usage", None)
-                if usage_obj is not None:
-                    in_1 = getattr(usage_obj, "input_tokens", 0)
-                    out_1 = getattr(usage_obj, "output_tokens", 0)
-                    usage_1 = Usage(input_tokens=in_1, output_tokens=out_1)
-                raw_model_1 = getattr(resp_obj, "model", None)
-                if isinstance(raw_model_1, str):
-                    returned_model_1 = raw_model_1
-                cost_1 = calculate_cost(returned_model_1, usage_1.input_tokens, usage_1.output_tokens, self.settings.pricing_file)
-            elif getattr(e, "usage", None) is not None:
-                u = getattr(e, "usage")
-                in_1 = getattr(u, "input_tokens", 0)
-                out_1 = getattr(u, "output_tokens", 0)
-                usage_1 = Usage(input_tokens=in_1, output_tokens=out_1)
-                cost_1 = calculate_cost(returned_model_1, in_1, out_1, self.settings.pricing_file)
 
         # Attempt 2: One repair turn
         repair_messages = list(messages)

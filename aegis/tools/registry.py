@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from aegis.models.schemas import AgentRole, ToolCallRecord
 from aegis.tools.base import BaseTool, ToolResult
-from aegis.tools.python_sandbox import PythonSandboxTool
-from aegis.tools.rag_tool import RAGRetrieverTool
+from aegis.tools.describe_tool import DescribeDatasetTool
+from aegis.tools.python_sandbox import PythonExecTool, PythonSandboxTool
+from aegis.tools.rag_tool import RAGRetrieverTool, RAGSearchTool
 from aegis.tools.sql_tool import SQLQueryTool
+
+if TYPE_CHECKING:
+    from aegis.tools.context import TaskContext
 
 
 class UnauthorizedToolAccessError(PermissionError):
@@ -22,14 +26,13 @@ class ToolRegistry:
     Restricts tool execution strictly to designated agent roles.
     """
 
-    # Explicit role-based permissions matrix
     ROLE_PERMISSIONS: Dict[AgentRole, List[str]] = {
-        AgentRole.PLANNER: [],  # Planner only reasons & plans; no tool execution
-        AgentRole.RESEARCH: ["rag_retriever"],
-        AgentRole.DATA_ANALYST: ["python_sandbox", "sql_query"],
-        AgentRole.VERIFICATION: ["rag_retriever", "python_sandbox"],
-        AgentRole.CRITIC: ["rag_retriever"],
-        AgentRole.SYNTHESIZER: [],  # Synthesizer only compiles validated outputs
+        AgentRole.PLANNER: [],
+        AgentRole.RESEARCH: ["rag_search", "rag_retriever"],
+        AgentRole.DATA_ANALYST: ["describe_dataset", "sql_query", "python_exec", "python_sandbox"],
+        AgentRole.VERIFICATION: ["rag_search", "rag_retriever", "python_exec", "python_sandbox"],
+        AgentRole.CRITIC: ["rag_search", "rag_retriever"],
+        AgentRole.SYNTHESIZER: [],
     }
 
     def __init__(self):
@@ -37,9 +40,20 @@ class ToolRegistry:
         self._register_default_tools()
 
     def _register_default_tools(self) -> None:
+        self.register(RAGSearchTool())
         self.register(RAGRetrieverTool())
-        self.register(PythonSandboxTool())
+        self.register(DescribeDatasetTool())
         self.register(SQLQueryTool())
+        self.register(PythonExecTool())
+        self.register(PythonSandboxTool())
+
+    @classmethod
+    def from_context(cls, context: TaskContext) -> ToolRegistry:
+        """Constructs a tool registry bound to a specific task context."""
+        registry = cls()
+        for tool in context.tools.values():
+            registry.register(tool)
+        return registry
 
     def register(self, tool: BaseTool) -> None:
         self._tools[tool.name] = tool
@@ -90,7 +104,6 @@ class ToolRegistry:
         return result.to_record(arguments=arguments)
 
 
-# Global Singleton Registry
 _global_tool_registry: Optional[ToolRegistry] = None
 
 

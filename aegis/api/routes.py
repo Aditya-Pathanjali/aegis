@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import queue
-from typing import Dict, List
+import re
+from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException
+import pandas as pd
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from aegis.api.schemas import (
     ApprovalActionRequest,
     DocumentUploadRequest,
     RAGSearchRequest,
-    TaskCreateRequest,
 )
-from aegis.config import get_settings
+from aegis.config import Settings, get_settings
 from aegis.models.schemas import TaskResponse, TaskSubmission, TraceEvent
 from aegis.rag.retriever import get_rag_knowledge_base
 from aegis.services.orchestrator_service import get_orchestrator_service
@@ -24,18 +26,46 @@ from aegis.services.orchestrator_service import get_orchestrator_service
 router = APIRouter(prefix="/api")
 
 
-# Sample sensor dataset pre-loaded for immediate demonstration
-SAMPLE_SENSOR_CSV = """timestamp,vibration_rms_x,vibration_rms_y,bearing_temperature_c,operating_pressure_bar,shaft_speed_rpm,status_flag
-2026-03-01 00:00:00,1.20,1.15,58.2,12.1,1495,NORMAL
-2026-03-03 00:00:00,1.35,1.28,59.5,12.1,1494,NORMAL
-2026-03-05 00:00:00,1.80,1.65,62.4,12.0,1492,NORMAL
-2026-03-08 00:00:00,2.30,2.10,65.8,11.9,1491,NORMAL
-2026-03-10 00:00:00,2.90,2.75,69.1,11.8,1490,WARNING
-2026-03-12 00:00:00,3.30,3.12,72.4,11.6,1487,WARNING
-2026-03-15 00:00:00,3.85,3.50,76.5,11.5,1482,ALERT
-2026-03-18 00:00:00,4.40,4.10,80.1,11.3,1480,ALERT
-2026-03-20 00:00:00,5.20,4.90,84.3,11.2,1475,CRITICAL
-"""
+def _sanitize_columns(columns: List[Any]) -> List[str]:
+    seen: Dict[str, int] = {}
+    new_cols: List[str] = []
+    for c in columns:
+        clean = re.sub(r"[^a-zA-Z0-9_]+", "_", str(c).strip().lower()).strip("_")
+        if not clean:
+            clean = "col"
+        if clean in seen:
+            seen[clean] += 1
+            new_cols.append(f"{clean}_{seen[clean]}")
+        else:
+            seen[clean] = 0
+            new_cols.append(clean)
+    return new_cols
+
+
+def _process_dataset_bytes(raw_bytes: bytes, settings: Settings) -> str:
+    if len(raw_bytes) > settings.dataset_max_bytes:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Dataset size ({len(raw_bytes)} bytes) exceeds limit of {settings.dataset_max_bytes} bytes.",
+        )
+    try:
+        df = pd.read_csv(io.BytesIO(raw_bytes))
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Failed to parse CSV dataset: {e}")
+
+    if len(df) > settings.dataset_max_rows:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Dataset row count ({len(df)}) exceeds limit of {settings.dataset_max_rows}.",
+        )
+    if len(df.columns) > settings.dataset_max_cols:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Dataset column count ({len(df.columns)}) exceeds limit of {settings.dataset_max_cols}.",
+        )
+
+    df.columns = _sanitize_columns(list(df.columns))
+    return df.to_csv(index=False)
 
 
 @router.get("/health")
@@ -55,19 +85,9 @@ def health_check():
     }
 
 
-@router.get("/sample-telemetry")
-def get_sample_telemetry():
-    """Returns sample industrial equipment telemetry for instant testing."""
-    return {
-        "filename": "turbine_journal_bearing_telemetry.csv",
-        "csv_content": SAMPLE_SENSOR_CSV,
-        "description": "500kW Slurry Pump Journal Bearing Telemetry showing accelerating RMS vibration and thermal surge.",
-    }
-
-
 @router.post("/tasks", response_model=Dict[str, str])
-def submit_task(req: TaskCreateRequest):
-    """Submits a new complex task for autonomous multi-agent decomposition and execution."""
+async def submit_task(request: Request):
+    """Submits a new task for autonomous multi-agent decomposition and execution."""
     import os
 
     settings = get_settings()
@@ -89,14 +109,63 @@ def submit_task(req: TaskCreateRequest):
             detail="OPENAI_API_KEY is not configured in environment.",
         )
 
+    content_type = request.headers.get("content-type", "")
+    query = ""
+    dataset_name = None
+    dataset_content = None
+    require_human_approval = False
+    max_retries = 2
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        query = str(form.get("query", ""))
+        dataset_name = form.get("dataset_name")
+        req_app = form.get("require_human_approval", False)
+        if isinstance(req_app, str):
+            require_human_approval = req_app.lower() in ("true", "1")
+        else:
+            require_human_approval = bool(req_app)
+        m_retries = form.get("max_retries")
+        if m_retries is not None:
+            try:
+                max_retries = int(m_retries)
+            except ValueError:
+                pass
+
+        file = form.get("file")
+        if file is not None and hasattr(file, "read"):
+            file_bytes = await file.read()
+            if not dataset_name and hasattr(file, "filename"):
+                dataset_name = file.filename
+            if file_bytes:
+                dataset_content = _process_dataset_bytes(file_bytes, settings)
+        elif "dataset_content" in form and form.get("dataset_content"):
+            raw_str = str(form.get("dataset_content"))
+            dataset_content = _process_dataset_bytes(raw_str.encode("utf-8"), settings)
+    else:
+        try:
+            body = await request.json()
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Invalid JSON request body: {e}")
+        query = body.get("query", "")
+        dataset_name = body.get("dataset_name")
+        raw_content = body.get("dataset_content")
+        require_human_approval = body.get("require_human_approval", False)
+        max_retries = body.get("max_retries", 2)
+        if raw_content:
+            dataset_content = _process_dataset_bytes(raw_content.encode("utf-8"), settings)
+
+    if not query or not query.strip():
+        raise HTTPException(status_code=422, detail="Query cannot be empty.")
+
     service = get_orchestrator_service()
     task_id = service.submit_task(
         TaskSubmission(
-            query=req.query,
-            dataset_name=req.dataset_name,
-            dataset_content=req.dataset_content,
-            require_human_approval=req.require_human_approval,
-            max_retries=req.max_retries,
+            query=query,
+            dataset_name=dataset_name,
+            dataset_content=dataset_content,
+            require_human_approval=require_human_approval,
+            max_retries=max_retries,
         )
     )
     return {"task_id": task_id, "status": "submitted"}
