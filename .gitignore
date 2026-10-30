@@ -57,3 +57,7 @@ data/raw/
 .DS_Store
 Thumbs.db
 ehthumbs.db
+
+# Live test artifacts
+tests/live/_last_run.json
+
