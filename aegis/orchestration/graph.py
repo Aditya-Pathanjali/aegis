@@ -548,7 +548,15 @@ class AegisOrchestrator:
             details=approval_req.model_dump(),
         )
 
-        decision = interrupt(approval_req.model_dump())
+        try:
+            decision = interrupt(approval_req.model_dump())
+        except RuntimeError:
+            # Invoked outside a LangGraph Runnable stream (e.g. unit testing node directly)
+            return {
+                "human_approval": approval_req,
+                "status": TaskStatus.WAITING_APPROVAL,
+                "trace_events": state.get("trace_events", []),
+            }
 
         if isinstance(decision, str):
             action = decision
