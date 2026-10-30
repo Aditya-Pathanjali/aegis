@@ -40,11 +40,21 @@ class OrchestratorService:
         self.trace_logger = trace_logger or get_trace_logger()
         self.llm = llm_provider
         self._subscribers: Dict[str, List[Callable[[TraceEvent], None]]] = {}
+        self._orchestrators: Dict[str, AegisOrchestrator] = {}
 
     def subscribe(self, task_id: str, callback: Callable[[TraceEvent], None]) -> None:
         if task_id not in self._subscribers:
             self._subscribers[task_id] = []
         self._subscribers[task_id].append(callback)
+
+    def unsubscribe(self, task_id: str, callback: Callable[[TraceEvent], None]) -> None:
+        if task_id in self._subscribers:
+            try:
+                self._subscribers[task_id].remove(callback)
+                if not self._subscribers[task_id]:
+                    del self._subscribers[task_id]
+            except ValueError:
+                pass
 
     def _broadcast_event(self, event: TraceEvent) -> None:
         self.trace_logger.log(event)
@@ -113,9 +123,18 @@ class OrchestratorService:
                 trace_callback=self._broadcast_event,
                 task_context=task_context,
             )
+            self._orchestrators[task_id] = orchestrator
 
-            final_state = orchestrator.run(initial_state)
+            def on_node(s):
+                self.state_store.save_state(task_id, s)
+
+            final_state = orchestrator.run(initial_state, on_node_finish=on_node)
             self.state_store.save_state(task_id, final_state)
+
+            if final_state.get("status") in (TaskStatus.COMPLETED, TaskStatus.REJECTED, TaskStatus.FAILED):
+                self._orchestrators.pop(task_id, None)
+                if task_context is not None:
+                    task_context.cleanup()
 
         except Exception as e:
             state = self.state_store.get_state(task_id) or initial_state
@@ -131,9 +150,15 @@ class OrchestratorService:
                 )
             )
             self.state_store.save_state(task_id, state)
-        finally:
+            self._orchestrators.pop(task_id, None)
             if task_context is not None:
                 task_context.cleanup()
+        finally:
+            st = self.state_store.get_state(task_id)
+            if st and st.get("status") != TaskStatus.WAITING_APPROVAL:
+                self._orchestrators.pop(task_id, None)
+                if task_context is not None:
+                    task_context.cleanup()
 
     def resolve_human_approval(
         self,
@@ -145,51 +170,64 @@ class OrchestratorService:
         if not state:
             raise KeyError(f"Task '{task_id}' not found.")
 
-        req: Optional[HumanApprovalRequest] = state.get("human_approval")
-        if not req:
-            req = HumanApprovalRequest(task_id=task_id)
+        if state.get("status") != TaskStatus.WAITING_APPROVAL:
+            raise ValueError(f"Task '{task_id}' is not in WAITING_APPROVAL status.")
 
-        req.decided_at = datetime.now(UTC)
-        req.feedback = feedback
+        orchestrator = self._orchestrators.get(task_id)
+        action_val = action.value if hasattr(action, "value") else str(action)
 
-        if action == ApprovalAction.APPROVE:
-            req.status = "approved"
-            state["status"] = TaskStatus.COMPLETED
-            msg = "Operator APPROVED the AI recommendation."
-        elif action == ApprovalAction.REJECT:
-            req.status = "rejected"
-            state["status"] = TaskStatus.REJECTED
-            msg = f"Operator REJECTED recommendation. Reason: {feedback or 'No comment'}"
-        elif action == ApprovalAction.REQUEST_REANALYSIS:
-            req.status = "revision_requested"
-            state["status"] = TaskStatus.RETRYING
-            msg = f"Operator requested RE-ANALYSIS with feedback: {feedback}"
-            # Re-run orchestrator with re-analysis in background
-            state["critic_evaluation"] = None
-            state["current_subtask_index"] = 0
-            state["retry_count"] = state.get("retry_count", 0) + 1
-            thread = threading.Thread(
-                target=self._run_workflow_worker,
-                args=(
-                    task_id,
-                    state,
-                    TaskSubmission(query=state["query"], require_human_approval=False),
-                ),
-                daemon=True,
-            )
-            thread.start()
+        if orchestrator is not None:
+            def on_node(s):
+                self.state_store.save_state(task_id, s)
 
-        state["human_approval"] = req
-        self._broadcast_event(
-            TraceEvent(
-                event_id=str(uuid.uuid4())[:8],
+            final_state = orchestrator.resume(
                 task_id=task_id,
-                event_type="human_gate",
-                message=msg,
-                details={"action": action.value, "feedback": feedback},
+                decision={"action": action_val, "feedback": feedback},
+                on_node_finish=on_node,
             )
-        )
-        self.state_store.save_state(task_id, state)
+            self.state_store.save_state(task_id, final_state)
+            if final_state.get("status") in (TaskStatus.COMPLETED, TaskStatus.REJECTED, TaskStatus.FAILED):
+                self._orchestrators.pop(task_id, None)
+                if hasattr(orchestrator, "task_context") and orchestrator.task_context is not None:
+                    try:
+                        orchestrator.task_context.cleanup()
+                    except Exception:
+                        pass
+        else:
+            req = state.get("human_approval") or HumanApprovalRequest(task_id=task_id)
+            req.decided_at = datetime.now(UTC)
+            req.feedback = feedback
+
+            if action == ApprovalAction.APPROVE:
+                req.status = "approved"
+                state["status"] = TaskStatus.COMPLETED
+                msg = "Operator APPROVED the AI recommendation."
+            elif action == ApprovalAction.REJECT:
+                req.status = "rejected"
+                state["status"] = TaskStatus.REJECTED
+                msg = f"Operator REJECTED recommendation. Reason: {feedback or 'No comment'}"
+            elif action == ApprovalAction.REQUEST_REANALYSIS:
+                req.status = "revision_requested"
+                state["status"] = TaskStatus.RETRYING
+                msg = f"Operator requested RE-ANALYSIS with feedback: {feedback}"
+                state["critic_evaluation"] = None
+                state["current_subtask_index"] = 0
+                state["retry_count"] = state.get("retry_count", 0) + 1
+            else:
+                msg = f"Operator decision: {action_val}"
+
+            state["human_approval"] = req
+            self._broadcast_event(
+                TraceEvent(
+                    event_id=str(uuid.uuid4())[:8],
+                    task_id=task_id,
+                    event_type="human_gate",
+                    message=msg,
+                    details={"action": action_val, "feedback": feedback},
+                )
+            )
+            self.state_store.save_state(task_id, state)
+
         return self.state_store.get_response(task_id)
 
 

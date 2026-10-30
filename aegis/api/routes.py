@@ -19,7 +19,7 @@ from aegis.api.schemas import (
     RAGSearchRequest,
 )
 from aegis.config import Settings, get_settings
-from aegis.models.schemas import TaskResponse, TaskSubmission, TraceEvent
+from aegis.models.schemas import TaskResponse, TaskStatus, TaskSubmission, TraceEvent
 from aegis.rag.retriever import get_rag_knowledge_base
 from aegis.services.orchestrator_service import get_orchestrator_service
 
@@ -187,10 +187,11 @@ def get_task(task_id: str):
 
 
 @router.get("/tasks/{task_id}/events")
-async def stream_task_events(task_id: str):
+async def stream_task_events(task_id: str, request: Request):
     """Server-Sent Events (SSE) endpoint streaming real-time agent execution traces."""
     service = get_orchestrator_service()
     event_queue: queue.Queue = queue.Queue()
+    seen_event_ids: set[str] = set()
 
     # Callback to push into queue
     def on_event(event: TraceEvent):
@@ -203,24 +204,38 @@ async def stream_task_events(task_id: str):
     existing_events = state.get("trace_events", []) if state else []
 
     async def event_generator():
-        # Send historical
-        for ev in existing_events:
-            yield f"data: {ev.model_dump_json()}\n\n"
+        try:
+            # Send historical events with de-duplication
+            for ev in existing_events:
+                if ev.event_id not in seen_event_ids:
+                    seen_event_ids.add(ev.event_id)
+                    yield f"data: {ev.model_dump_json()}\n\n"
 
-        # Stream new events
-        while True:
-            try:
-                # Check for new event non-blocking
-                ev = event_queue.get_nowait()
-                yield f"data: {ev.model_dump_json()}\n\n"
-            except queue.Empty:
-                # Check if task is finished
-                current_state = service.state_store.get_state(task_id)
-                status = current_state.get("status") if current_state else None
-                if status in ["completed", "failed", "rejected", "waiting_approval"]:
-                    yield f"data: {json.dumps({'event_type': 'stream_end', 'status': status})}\n\n"
+            # Stream new events
+            while True:
+                if await request.is_disconnected():
                     break
-                await asyncio.sleep(0.3)
+                try:
+                    # Check for new event non-blocking
+                    ev = event_queue.get_nowait()
+                    if ev.event_id not in seen_event_ids:
+                        seen_event_ids.add(ev.event_id)
+                        yield f"data: {ev.model_dump_json()}\n\n"
+                except queue.Empty:
+                    # Check if task is finished
+                    current_state = service.state_store.get_state(task_id)
+                    status = current_state.get("status") if current_state else None
+                    if status in ["completed", "failed", "rejected", "waiting_approval"]:
+                        while not event_queue.empty():
+                            ev = event_queue.get_nowait()
+                            if ev.event_id not in seen_event_ids:
+                                seen_event_ids.add(ev.event_id)
+                                yield f"data: {ev.model_dump_json()}\n\n"
+                        yield f"data: {json.dumps({'event_type': 'stream_end', 'status': status})}\n\n"
+                        break
+                    await asyncio.sleep(0.1)
+        finally:
+            service.unsubscribe(task_id, on_event)
 
     return StreamingResponse(
         event_generator(),
@@ -233,10 +248,21 @@ async def stream_task_events(task_id: str):
     )
 
 
+@router.post("/tasks/{task_id}/approve", response_model=TaskResponse)
 @router.post("/tasks/{task_id}/approval", response_model=TaskResponse)
 def handle_human_approval(task_id: str, req: ApprovalActionRequest):
     """Handles Human-in-the-Loop approval decision (Approve, Reject, Request Re-analysis)."""
     service = get_orchestrator_service()
+    state = service.state_store.get_state(task_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+
+    if state.get("status") != TaskStatus.WAITING_APPROVAL:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task '{task_id}' is not in WAITING_APPROVAL status (current: {state.get('status')}).",
+        )
+
     try:
         updated_task = service.resolve_human_approval(
             task_id=task_id,
@@ -244,6 +270,8 @@ def handle_human_approval(task_id: str, req: ApprovalActionRequest):
             feedback=req.feedback,
         )
         return updated_task
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
 
