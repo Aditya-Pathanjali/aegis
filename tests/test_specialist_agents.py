@@ -125,8 +125,62 @@ def test_fabricated_refs_dropped(sample_task_context):
     f2 = result.findings[1]
     assert len(f2.evidence) == 0
 
-    # Dropped all refs from finding 2 should be noted in limitations
-    assert any("No verified evidence remaining" in lim for lim in result.limitations)
+    # Every dropped ref should be recorded in limitations
+    assert any("fake-call-999" in lim for lim in result.limitations)
+    assert any("fake-chunk-888" in lim for lim in result.limitations)
+    assert any("fabricated-chunk-000" in lim for lim in result.limitations)
+
+
+def test_failed_or_denied_tool_call_cannot_be_cited(sample_task_context):
+    """Failed or denied tool calls are not added to produced_tool_ids and cannot be cited."""
+    failed_call_id = "call-failed-sql-1"
+    denied_call_id = "call-denied-exec-1"
+
+    # Tool call 1: invalid SQL causing execution failure
+    tool_resp_1 = fake_tool_call(
+        name="sql_query",
+        args={"query": "SELECT * FROM non_existent_table_xyz;"},
+        tool_call_id=failed_call_id,
+    )
+    # Tool call 2: unauthorized tool for role
+    tool_resp_2 = fake_tool_call(
+        name="python_exec",
+        args={"code": "x = 1"},
+        tool_call_id=denied_call_id,
+    )
+    final_text = fake_text("Completed attempts.")
+    structured_out = SpecialistOutput(
+        summary="Failed tool run summary.",
+        findings=[
+            Finding(
+                statement="Claim citing failed and denied calls.",
+                evidence=[
+                    EvidenceRef(kind="tool_call", ref_id=failed_call_id),
+                    EvidenceRef(kind="tool_call", ref_id=denied_call_id),
+                ],
+            )
+        ],
+        limitations=[],
+    )
+
+    fake_llm = FakeLLM(responses=[tool_resp_1, tool_resp_2, final_text, structured_out])
+
+    from aegis.agents.tool_agent import run_tool_agent
+
+    result = run_tool_agent(
+        llm_provider=fake_llm,
+        system_prompt="Test",
+        user_prompt="Run tools",
+        permitted_tool_names=["sql_query"],  # python_exec not permitted
+        tool_registry=sample_task_context.tool_registry,
+        role=AgentRole.DATA_ANALYST,
+        subtask_id="st-failed-cite",
+    )
+
+    # Both citations should be dropped because neither call succeeded
+    assert len(result.findings[0].evidence) == 0
+    assert any(failed_call_id in lim for lim in result.limitations)
+    assert any(denied_call_id in lim for lim in result.limitations)
 
 
 def test_step_limit_enforced(sample_task_context):
@@ -166,6 +220,7 @@ def test_step_limit_enforced(sample_task_context):
 
     assert len(result.tool_calls) == 2
     assert result.output_summary == "Budget reached summary."
+    assert any("Step limit (2) reached" in lim for lim in result.limitations)
 
 
 def test_invalid_plan_repaired_once_and_succeeds():

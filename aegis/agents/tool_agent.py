@@ -78,6 +78,7 @@ def run_tool_agent(
 
     t0 = time.perf_counter()
 
+    step_limit_hit = False
     # Step limit loop
     for _ in range(max_steps):
         resp: LLMResponse = llm_provider.chat(
@@ -98,7 +99,6 @@ def run_tool_agent(
         tool_result_blocks: List[Block] = []
         for tc in tool_calls:
             call_id = tc.id
-            produced_tool_ids.add(call_id)
 
             # Check for OpenAI parse errors
             if tc.parse_error or tc.name == "parse_error":
@@ -156,6 +156,8 @@ def run_tool_agent(
             all_tool_records.append(rec)
 
             if rec.success:
+                # Only successful tool calls are eligible evidence references
+                produced_tool_ids.add(call_id)
                 # Harvest chunk IDs from RAG output
                 if isinstance(rec.output, dict):
                     evidence_items = rec.output.get("evidence", [])
@@ -186,6 +188,9 @@ def run_tool_agent(
                 )
 
         messages.append(Message(role="user", content=tool_result_blocks))
+    else:
+        # Loop exhausted all steps without model issuing final answer
+        step_limit_hit = True
 
     # Conclude with structured schema output
     instruction_text = (
@@ -207,24 +212,23 @@ def run_tool_agent(
 
     spec_output: SpecialistOutput = struct_res.value
     valid_limitations = list(spec_output.limitations)
+    if step_limit_hit:
+        valid_limitations.append(f"Step limit ({max_steps}) reached before tool execution completed.")
 
-    # Validate evidence references: silently drop fabricated or unproduced references;
-    # if none remain, note it in limitations.
+    # Validate evidence references: record every unverified or dropped reference into limitations
     for finding in spec_output.findings:
-        original_ref_count = len(finding.evidence)
         valid_refs: List[EvidenceRef] = []
         for ref in finding.evidence:
             if ref.kind == "chunk" and ref.ref_id in produced_chunk_ids:
                 valid_refs.append(ref)
             elif ref.kind in ("tool_call", "tool_output") and ref.ref_id in produced_tool_ids:
                 valid_refs.append(EvidenceRef(kind="tool_call", ref_id=ref.ref_id))
-            # Silently drop fabricated or unproduced references
+            else:
+                valid_limitations.append(
+                    f"Dropped unverified evidence reference ({ref.kind}:{ref.ref_id}) for finding: {finding.statement[:80]}"
+                )
 
         finding.evidence = valid_refs
-        if original_ref_count > 0 and len(valid_refs) == 0:
-            valid_limitations.append(
-                f"No verified evidence remaining for finding: {finding.statement[:80]}"
-            )
 
     duration_sec = time.perf_counter() - t0
     cost_usd = calculate_cost(struct_res.model, total_in_tokens, total_out_tokens) if struct_res.model else None
