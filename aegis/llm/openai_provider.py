@@ -230,6 +230,11 @@ class OpenAIProvider:
         t0 = time.perf_counter()
         validation_error_str = ""
         raw_text_1 = ""
+        usage_1 = Usage()
+        returned_model_1 = self.model
+        cost_1 = None
+        lat_1 = 0.0
+
         try:
             resp_1 = self.client.chat.completions.parse(**kwargs)
             lat_1 = (time.perf_counter() - t0) * 1000.0
@@ -260,13 +265,27 @@ class OpenAIProvider:
             if e.status_code in (400, 401, 403, 404):
                 raise LLMRequestError(provider="openai", status_code=e.status_code, message=str(e)) from e
             raise
-        except (ValidationError, Exception) as e:
+        except ValidationError as e:
             lat_1 = (time.perf_counter() - t0) * 1000.0
-            usage_1 = Usage()
-            returned_model_1 = self.model
-            cost_1 = None
             validation_error_str = str(e)
             raw_text_1 = getattr(e, "raw_text", str(e))
+            resp_obj = getattr(e, "response", None) or getattr(e, "completion", None)
+            if resp_obj is not None:
+                usage_obj = getattr(resp_obj, "usage", None)
+                if usage_obj is not None:
+                    in_1 = getattr(usage_obj, "prompt_tokens", 0)
+                    out_1 = getattr(usage_obj, "completion_tokens", 0)
+                    usage_1 = Usage(input_tokens=in_1, output_tokens=out_1)
+                raw_model_1 = getattr(resp_obj, "model", None)
+                if isinstance(raw_model_1, str):
+                    returned_model_1 = raw_model_1
+                cost_1 = calculate_cost(returned_model_1, usage_1.input_tokens, usage_1.output_tokens, self.settings.pricing_file)
+            elif getattr(e, "usage", None) is not None:
+                u = getattr(e, "usage")
+                in_1 = getattr(u, "prompt_tokens", 0)
+                out_1 = getattr(u, "completion_tokens", 0)
+                usage_1 = Usage(input_tokens=in_1, output_tokens=out_1)
+                cost_1 = calculate_cost(returned_model_1, in_1, out_1, self.settings.pricing_file)
 
         # Attempt 2: One repair turn
         repair_messages = list(messages)
@@ -329,7 +348,7 @@ class OpenAIProvider:
             if e.status_code in (400, 401, 403, 404):
                 raise LLMRequestError(provider="openai", status_code=e.status_code, message=str(e)) from e
             raise
-        except (ValidationError, Exception) as err:
+        except ValidationError as err:
             raise StructuredOutputError(
                 f"Structured output validation failed after repair turn: {err}",
                 raw_text=getattr(err, "raw_text", str(err)),
@@ -384,7 +403,7 @@ class OpenAIProvider:
                     attempts=1,
                     cost_usd=resp_1.cost_usd,
                 )
-            except (ValidationError, Exception) as val_err:
+            except ValidationError as val_err:
                 validation_error_str = str(val_err)
         else:
             validation_error_str = f"Model did not invoke tool '{tool_name}'."
@@ -461,7 +480,7 @@ class OpenAIProvider:
                 attempts=2,
                 cost_usd=total_cost,
             )
-        except (ValidationError, Exception) as err:
+        except ValidationError as err:
             raise StructuredOutputError(
                 f"Structured output validation failed after repair turn: {err}",
                 raw_text=raw_text_2,

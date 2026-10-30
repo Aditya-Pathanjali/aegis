@@ -339,7 +339,7 @@ def test_anthropic_structured_native_valid_first_time():
     parsed_block.parsed_output = DummyOutput(summary="All systems nominal", count=5)
 
     resp = MagicMock()
-    resp.model = "claude-3-5-sonnet-20241022"
+    resp.model = "claude-sonnet-5-5-20261022"
     resp.content = [parsed_block]
     resp.usage.input_tokens = 100
     resp.usage.output_tokens = 30
@@ -357,7 +357,7 @@ def test_anthropic_structured_native_valid_first_time():
     assert result.value.count == 5
     assert result.usage.input_tokens == 100
     assert result.usage.output_tokens == 30
-    assert result.model == "claude-3-5-sonnet-20241022"
+    assert result.model == "claude-sonnet-5-5-20261022"
     assert mock_client.messages.parse.called
 
 
@@ -622,9 +622,21 @@ def test_openai_structured_tool_mode_fallback():
     assert not mock_client.chat.completions.parse.called
 
 
-def test_structured_unpriced_attempt_returns_none_total_cost():
+def test_structured_unpriced_attempt_returns_none_total_cost(tmp_path):
     """If any attempt is unpriced (model not in pricing.yaml), total cost must be None."""
     mock_client = MagicMock()
+
+    pricing_yaml = tmp_path / "pricing.yaml"
+    pricing_yaml.write_text(
+        """
+gpt-4o:
+  input_per_mtok_usd: 2.5
+  output_per_mtok_usd: 10.0
+  source_url: "https://openai.com/pricing"
+  checked_on: "2026-10-01"
+""",
+        encoding="utf-8",
+    )
 
     # Attempt 1: Known priced model
     choice1 = MagicMock()
@@ -649,7 +661,8 @@ def test_structured_unpriced_attempt_returns_none_total_cost():
 
     mock_client.chat.completions.parse.side_effect = [resp1, resp2]
 
-    provider = OpenAIProvider(model="gpt-4o", api_key="fake", client=mock_client)
+    settings = Settings(provider="openai", model="gpt-4o", pricing_file=str(pricing_yaml))
+    provider = OpenAIProvider(model="gpt-4o", api_key="fake", settings=settings, client=mock_client)
     result = provider.structured(
         [Message(role="user", content=[TextBlock(text="Generate")])],
         schema=DummyOutput,
@@ -734,9 +747,25 @@ def test_pricing_works_from_different_working_directory(monkeypatch, tmp_path):
     default_path = resolve_pricing_path()
     assert default_path.exists()
 
+    # The committed default file is an empty mapping
     registry = load_pricing_registry()
-    assert "claude-sonnet-5-5" in registry
-    assert "gpt-4o" in registry
+    assert isinstance(registry, dict)
+
+    # Tests that need prices write their own temporary file
+    custom_pricing = tmp_path / "custom_pricing.yaml"
+    custom_pricing.write_text(
+        """
+custom-model:
+  input_per_mtok_usd: 1.5
+  output_per_mtok_usd: 3.5
+  source_url: "https://example.com/pricing"
+  checked_on: "2026-10-01"
+""",
+        encoding="utf-8",
+    )
+    reg_custom = load_pricing_registry(str(custom_pricing))
+    assert "custom-model" in reg_custom
+    assert reg_custom["custom-model"].input_per_mtok_usd == 1.5
 
 
 def test_pricing_file_is_read_once_across_many_calls(tmp_path):
@@ -817,3 +846,211 @@ def test_planner_trace_event_tokens_equal_fake_llm_usage():
     assert planner_finish_event.model == "fake-planner-model"
     assert planner_finish_event.duration_ms == 88.5
     assert planner_finish_event.estimated_cost_usd == 0.005
+
+
+# ==============================================================================
+# Exception Propagation & Usage Accounting Tests
+# ==============================================================================
+
+def test_anthropic_structured_api_connection_error_propagates():
+    import anthropic
+    mock_client = MagicMock()
+    mock_client.messages.parse.side_effect = anthropic.APIConnectionError(request=MagicMock())
+
+    provider = AnthropicProvider(model="claude-sonnet-5-5", api_key="fake", client=mock_client)
+    with pytest.raises(anthropic.APIConnectionError):
+        provider.structured(
+            [Message(role="user", content=[TextBlock(text="Generate")])],
+            schema=DummyOutput,
+        )
+
+    # Must fail immediately without making a second repair call
+    assert mock_client.messages.parse.call_count == 1
+
+
+def test_openai_structured_api_connection_error_propagates():
+    import openai
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = openai.APIConnectionError(request=MagicMock())
+
+    provider = OpenAIProvider(model="gpt-4o", api_key="fake", client=mock_client)
+    with pytest.raises(openai.APIConnectionError):
+        provider.structured(
+            [Message(role="user", content=[TextBlock(text="Generate")])],
+            schema=DummyOutput,
+        )
+
+    # Must fail immediately without making a second repair call
+    assert mock_client.chat.completions.parse.call_count == 1
+
+
+def test_anthropic_structured_type_error_propagates():
+    mock_client = MagicMock()
+    mock_client.messages.parse.side_effect = TypeError("Internal type mismatch")
+
+    provider = AnthropicProvider(model="claude-sonnet-5-5", api_key="fake", client=mock_client)
+    with pytest.raises(TypeError, match="Internal type mismatch"):
+        provider.structured(
+            [Message(role="user", content=[TextBlock(text="Generate")])],
+            schema=DummyOutput,
+        )
+
+    # Must propagate unchanged, no repair call made
+    assert mock_client.messages.parse.call_count == 1
+
+
+def test_openai_structured_type_error_propagates():
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = TypeError("Internal type mismatch")
+
+    provider = OpenAIProvider(model="gpt-4o", api_key="fake", client=mock_client)
+    with pytest.raises(TypeError, match="Internal type mismatch"):
+        provider.structured(
+            [Message(role="user", content=[TextBlock(text="Generate")])],
+            schema=DummyOutput,
+        )
+
+    # Must propagate unchanged, no repair call made
+    assert mock_client.chat.completions.parse.call_count == 1
+
+
+def test_structured_tool_type_error_propagates():
+    """In tool mode, unexpected TypeError during validation propagates unchanged."""
+    mock_client = MagicMock()
+    tc_mock = MagicMock()
+    tc_mock.id = "tc_err"
+    tc_mock.function.name = "DummyOutput"
+    tc_mock.function.arguments = json.dumps({"summary": "Valid JSON", "count": 5})
+
+    choice = MagicMock()
+    choice.message.content = None
+    choice.message.tool_calls = [tc_mock]
+    choice.finish_reason = "tool_calls"
+    resp = MagicMock()
+    resp.model = "gpt-4o"
+    resp.choices = [choice]
+    mock_client.chat.completions.create.return_value = resp
+
+    settings = Settings(provider="openai", model="gpt-4o", structured_mode="tool")
+    provider = OpenAIProvider(model="gpt-4o", api_key="fake", settings=settings, client=mock_client)
+
+    with patch.object(DummyOutput, "model_validate", side_effect=TypeError("Unexpected model bug")):
+        with pytest.raises(TypeError, match="Unexpected model bug"):
+            provider.structured(
+                [Message(role="user", content=[TextBlock(text="Generate")])],
+                schema=DummyOutput,
+            )
+
+    # Only 1 attempt was made; not treated as a schema failure
+    assert mock_client.chat.completions.create.call_count == 1
+
+
+def test_anthropic_structured_usage_accumulates_when_first_fails_validation():
+    mock_client = MagicMock()
+
+    # Attempt 1: response arrives but model fails schema (no parsed output)
+    resp1 = MagicMock()
+    resp1.model = "claude-sonnet-5-5"
+    resp1.content = [MagicMock(text="Broken JSON response", parsed_output=None)]
+    resp1.usage.input_tokens = 85
+    resp1.usage.output_tokens = 35
+
+    # Attempt 2: repaired response succeeds
+    parsed_block = MagicMock()
+    parsed_block.parsed_output = DummyOutput(summary="Repaired valid", count=3)
+    resp2 = MagicMock()
+    resp2.model = "claude-sonnet-5-5"
+    resp2.content = [parsed_block]
+    resp2.usage.input_tokens = 115
+    resp2.usage.output_tokens = 45
+
+    mock_client.messages.parse.side_effect = [resp1, resp2]
+
+    provider = AnthropicProvider(model="claude-sonnet-5-5", api_key="fake", client=mock_client)
+    result = provider.structured(
+        [Message(role="user", content=[TextBlock(text="Generate")])],
+        schema=DummyOutput,
+    )
+
+    assert result.attempts == 2
+    # Critical: tokens from first attempt (85, 35) must not be lost
+    assert result.usage.input_tokens == 200  # 85 + 115
+    assert result.usage.output_tokens == 80  # 35 + 45
+
+
+def test_openai_structured_usage_accumulates_when_first_fails_validation():
+    mock_client = MagicMock()
+
+    # Attempt 1: response arrives but parsed is None
+    choice1 = MagicMock()
+    choice1.message.parsed = None
+    choice1.message.refusal = "Could not comply"
+    choice1.message.content = "Failed output"
+    resp1 = MagicMock()
+    resp1.model = "gpt-4o"
+    resp1.choices = [choice1]
+    resp1.usage.prompt_tokens = 90
+    resp1.usage.completion_tokens = 40
+
+    # Attempt 2: repaired response succeeds
+    choice2 = MagicMock()
+    choice2.message.parsed = DummyOutput(summary="Now valid", count=6)
+    choice2.message.refusal = None
+    resp2 = MagicMock()
+    resp2.model = "gpt-4o"
+    resp2.choices = [choice2]
+    resp2.usage.prompt_tokens = 110
+    resp2.usage.completion_tokens = 50
+
+    mock_client.chat.completions.parse.side_effect = [resp1, resp2]
+
+    provider = OpenAIProvider(model="gpt-4o", api_key="fake", client=mock_client)
+    result = provider.structured(
+        [Message(role="user", content=[TextBlock(text="Generate")])],
+        schema=DummyOutput,
+    )
+
+    assert result.attempts == 2
+    # Critical: prompt tokens and completion tokens from both attempts must be accumulated
+    assert result.usage.input_tokens == 200  # 90 + 110
+    assert result.usage.output_tokens == 90  # 40 + 50
+
+
+def test_structured_tool_usage_accumulates_when_first_fails_validation():
+    mock_client = MagicMock()
+
+    # Attempt 1: tool call has count = 0 (fails DummyOutput ge=1)
+    tc1 = MagicMock()
+    tc1.id = "tc_1"
+    tc1.function.name = "DummyOutput"
+    tc1.function.arguments = json.dumps({"summary": "Bad count", "count": 0})
+    resp1 = MagicMock()
+    resp1.model = "gpt-4o"
+    resp1.choices = [MagicMock(message=MagicMock(tool_calls=[tc1], content=None), finish_reason="tool_calls")]
+    resp1.usage.prompt_tokens = 95
+    resp1.usage.completion_tokens = 30
+
+    # Attempt 2: repaired tool call succeeds
+    tc2 = MagicMock()
+    tc2.id = "tc_2"
+    tc2.function.name = "DummyOutput"
+    tc2.function.arguments = json.dumps({"summary": "Good count", "count": 2})
+    resp2 = MagicMock()
+    resp2.model = "gpt-4o"
+    resp2.choices = [MagicMock(message=MagicMock(tool_calls=[tc2], content=None), finish_reason="tool_calls")]
+    resp2.usage.prompt_tokens = 125
+    resp2.usage.completion_tokens = 40
+
+    mock_client.chat.completions.create.side_effect = [resp1, resp2]
+
+    settings = Settings(provider="openai", model="gpt-4o", structured_mode="tool")
+    provider = OpenAIProvider(model="gpt-4o", api_key="fake", settings=settings, client=mock_client)
+    result = provider.structured(
+        [Message(role="user", content=[TextBlock(text="Generate")])],
+        schema=DummyOutput,
+    )
+
+    assert result.attempts == 2
+    assert result.usage.input_tokens == 220  # 95 + 125
+    assert result.usage.output_tokens == 70  # 30 + 40
+

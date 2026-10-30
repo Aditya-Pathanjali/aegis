@@ -1,36 +1,14 @@
-# Pricing registry: USD per 1,000,000 tokens (1 MTok).
-# To update pricing, verify current rates on the provider pricing pages and update the values below.
+# Model pricing registry: USD per 1,000,000 tokens (1 MTok).
+# Filled by administrator/user from the providers' pricing pages.
 #
 # Units:
 #   input_per_mtok_usd: USD per 1M input tokens
 #   output_per_mtok_usd: USD per 1M output tokens
-
-claude-sonnet-5-5:
-  input_per_mtok_usd: 3.0
-  output_per_mtok_usd: 15.0
-  source_url: "https://www.anthropic.com/pricing"
-  checked_on: "2026-10-01"
-
-claude-3-5-sonnet-20241022:
-  input_per_mtok_usd: 3.0
-  output_per_mtok_usd: 15.0
-  source_url: "https://www.anthropic.com/pricing"
-  checked_on: "2026-10-01"
-
-gpt-4o:
-  input_per_mtok_usd: 2.5
-  output_per_mtok_usd: 10.0
-  source_url: "https://openai.com/pricing"
-  checked_on: "2026-10-01"
-
-gpt-4o-2024-08-06:
-  input_per_mtok_usd: 2.5
-  output_per_mtok_usd: 10.0
-  source_url: "https://openai.com/pricing"
-  checked_on: "2026-10-01"
-
-gpt-4o-mini:
-  input_per_mtok_usd: 0.15
-  output_per_mtok_usd: 0.60
-  source_url: "https://openai.com/pricing"
-  checked_on: "2026-10-01"
+#
+# Format:
+#   <model_id>:
+#     input_per_mtok_usd: float
+#     output_per_mtok_usd: float
+#     source_url: str
+#     checked_on: str (YYYY-MM-DD)
+{}
