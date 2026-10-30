@@ -59,6 +59,11 @@ class TaskContext:
             "python_exec": py_tool,
         }
 
+    @property
+    def tool_registry(self):
+        from aegis.tools.registry import ToolRegistry
+        return ToolRegistry.from_context(self)
+
     def cleanup(self) -> None:
         """Closes SQLite connection and removes temporary working directory."""
         if hasattr(self, "sqlite_conn") and self.sqlite_conn is not None:
@@ -77,3 +82,4 @@ class TaskContext:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.cleanup()
+

@@ -10,11 +10,13 @@ from aegis.models.schemas import (
     AgentRole,
     CriticEvaluation,
     ExecutionPlan,
+    Finding,
+    SpecialistOutput,
     SubTask,
     VerificationMetrics,
     VerificationResult,
 )
-from tests.fakes import FakeLLM
+from tests.fakes import FakeLLM, fake_text
 
 
 def test_planner_agent():
@@ -28,12 +30,14 @@ def test_planner_agent():
                 title="Engineering Literature Review",
                 description="Review operating guidelines",
                 assigned_agent=AgentRole.RESEARCH,
+                required_tools=["rag_search"],
             ),
             SubTask(
                 id="st-2",
                 title="Data Profiling",
                 description="Profile dataset statistics",
                 assigned_agent=AgentRole.DATA_ANALYST,
+                required_tools=["sql_query"],
             ),
         ],
     )
@@ -50,7 +54,13 @@ def test_planner_agent():
 
 
 def test_research_agent():
-    researcher = ResearchAgent(llm_provider=FakeLLM())
+    out = SpecialistOutput(
+        summary="Retrieved engineering standards for vibration limits.",
+        findings=[Finding(statement="Vibration threshold standard defined.", evidence=[])],
+        limitations=[],
+    )
+    fake_llm = FakeLLM(responses=[fake_text("Done searching."), out])
+    researcher = ResearchAgent(llm_provider=fake_llm)
     st = SubTask(
         id="st-res",
         title="Literature Search",
@@ -58,13 +68,18 @@ def test_research_agent():
         assigned_agent=AgentRole.RESEARCH,
     )
     res = researcher.execute(subtask=st)
-    assert res.output_summary == "Research agent not implemented yet (PR 5)"
-    assert res.detailed_findings == []
-    assert res.metadata["limitations"] == ["Research agent not implemented yet (PR 5)"]
+    assert res.output_summary == "Retrieved engineering standards for vibration limits."
+    assert len(res.findings) == 1
 
 
 def test_data_analyst_agent():
-    analyst = DataAnalystAgent(llm_provider=FakeLLM())
+    out = SpecialistOutput(
+        summary="Data profiling complete.",
+        findings=[Finding(statement="Dataset has 10 columns.", evidence=[])],
+        limitations=[],
+    )
+    fake_llm = FakeLLM(responses=[fake_text("Done profiling."), out])
+    analyst = DataAnalystAgent(llm_provider=fake_llm)
     st = SubTask(
         id="st-data",
         title="Data Analysis",
@@ -72,15 +87,18 @@ def test_data_analyst_agent():
         assigned_agent=AgentRole.DATA_ANALYST,
     )
     res = analyst.execute(subtask=st)
-    assert res.output_summary == "Data analyst agent not implemented yet (PR 5)"
-    assert res.detailed_findings == []
-    assert res.data_tables == []
-    assert res.metadata["limitations"] == ["Data analyst agent not implemented yet (PR 5)"]
+    assert res.output_summary == "Data profiling complete."
+    assert len(res.findings) == 1
 
 
 def test_verification_agent():
     verifier = VerificationAgent(llm_provider=FakeLLM())
-    analyst = DataAnalystAgent(llm_provider=FakeLLM())
+    out = SpecialistOutput(
+        summary="Data analysis output",
+        findings=[],
+        limitations=[],
+    )
+    analyst = DataAnalystAgent(llm_provider=FakeLLM(responses=[fake_text("ok"), out]))
     res = analyst.execute(
         subtask=SubTask(id="st", title="test", description="test", assigned_agent=AgentRole.DATA_ANALYST)
     )
@@ -93,7 +111,12 @@ def test_verification_agent():
 def test_critic_agent():
     critic = CriticAgent(llm_provider=FakeLLM())
     verifier = VerificationAgent(llm_provider=FakeLLM())
-    analyst = DataAnalystAgent(llm_provider=FakeLLM())
+    out = SpecialistOutput(
+        summary="Data analysis output",
+        findings=[],
+        limitations=[],
+    )
+    analyst = DataAnalystAgent(llm_provider=FakeLLM(responses=[fake_text("ok"), out]))
     res = analyst.execute(
         subtask=SubTask(id="st", title="test", description="test", assigned_agent=AgentRole.DATA_ANALYST)
     )

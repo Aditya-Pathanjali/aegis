@@ -172,14 +172,28 @@ class AegisOrchestrator:
             details={"required_tools": subtask.required_tools},
         )
 
+        # Prepare context including upstream outputs
+        upstream_parts: list[str] = []
+        for dep_id in subtask.depends_on:
+            for past_res in state.get("specialist_results", []):
+                if past_res.subtask_id == dep_id:
+                    finding_lines = "\n".join(f"- {f.statement}" for f in past_res.findings)
+                    upstream_parts.append(
+                        f"Subtask '{dep_id}' output:\nSummary: {past_res.output_summary}\nFindings:\n{finding_lines}"
+                    )
+        context = {
+            "content": state.get("dataset_content"),
+            "upstream_context": "\n\n".join(upstream_parts),
+        }
+
         # Dynamic routing to specialist agent
         if agent_role == AgentRole.RESEARCH:
-            result = self.research_agent.execute(subtask=subtask)
+            result = self.research_agent.execute(subtask=subtask, context=context)
         elif agent_role == AgentRole.DATA_ANALYST:
-            result = self.data_analyst_agent.execute(subtask=subtask, context={"content": state.get("dataset_content")})
+            result = self.data_analyst_agent.execute(subtask=subtask, context=context)
         else:
             # Fallback to research
-            result = self.research_agent.execute(subtask=subtask)
+            result = self.research_agent.execute(subtask=subtask, context=context)
 
         # Log tool calls
         for tc in result.tool_calls:
@@ -198,14 +212,24 @@ class AegisOrchestrator:
         state["specialist_results"].append(result)
 
         duration = (time.perf_counter() - t0) * 1000.0
+        in_tok = result.usage.input_tokens if result.usage else 0
+        out_tok = result.usage.output_tokens if result.usage else 0
+        tokens_total = in_tok + out_tok
+        cost = result.metadata.get("cost_usd") if result.metadata else None
+        model_name = result.metadata.get("model") if result.metadata else None
+
         self._log_trace(
             state=state,
             agent_role=agent_role,
             event_type="agent_finish",
             message=f"{agent_role.value.capitalize()} Agent completed: {result.output_summary[:100]}...",
-            details={"findings_count": len(result.detailed_findings)},
+            details={"findings_count": len(result.findings)},
             duration_ms=duration,
-            token_usage=0,
+            token_usage=tokens_total,
+            cost_usd=cost,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            model=model_name,
         )
 
         state["current_subtask_index"] = idx + 1

@@ -110,7 +110,11 @@ def test_graph_outputs_strictly_derived_from_input_and_fake_llm():
             )
         ],
     )
-    fake_llm_1 = FakeLLM(responses=[plan_1])
+    from aegis.models.schemas import SpecialistOutput
+    from tests.fakes import fake_text
+
+    spec_1 = SpecialistOutput(summary="Hydraulic pressure review completed.", findings=[], limitations=[])
+    fake_llm_1 = FakeLLM(responses=[plan_1, fake_text("Done."), spec_1])
     orch_1 = AegisOrchestrator(llm_provider=fake_llm_1)
     state_1: AegisState = {
         "task_id": "t-1",
@@ -138,7 +142,8 @@ def test_graph_outputs_strictly_derived_from_input_and_fake_llm():
             )
         ],
     )
-    fake_llm_2 = FakeLLM(responses=[plan_2])
+    spec_2 = SpecialistOutput(summary="Solar inverter thermal analysis completed.", findings=[], limitations=[])
+    fake_llm_2 = FakeLLM(responses=[plan_2, fake_text("Done."), spec_2])
     orch_2 = AegisOrchestrator(llm_provider=fake_llm_2)
     state_2: AegisState = {
         "task_id": "t-2",
