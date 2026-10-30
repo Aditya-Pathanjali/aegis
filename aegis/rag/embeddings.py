@@ -22,13 +22,40 @@ class BaseEmbeddings(ABC):
         pass
 
 
-class FastDenseEmbeddings(BaseEmbeddings):
+class SentenceTransformerEmbeddings(BaseEmbeddings):
     """
-    High-performance semantic-hash dense embedding generator (128-dim).
-    Guarantees deterministic, normalized unit vectors with zero network dependencies.
+    Default production embedder using SentenceTransformer (dim 384).
+    Generates normalized dense embeddings.
     """
 
-    def __init__(self, dimension: int = 128):
+    _cached_model = None
+
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        self.model_name = model_name
+        self.dimension = 384
+        if SentenceTransformerEmbeddings._cached_model is None:
+            from sentence_transformers import SentenceTransformer
+            SentenceTransformerEmbeddings._cached_model = SentenceTransformer(self.model_name)
+        self.model = SentenceTransformerEmbeddings._cached_model
+
+    def embed_text(self, text: str) -> List[float]:
+        emb = self.model.encode(text, normalize_embeddings=True)
+        return emb.tolist()
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            return []
+        embs = self.model.encode(texts, normalize_embeddings=True)
+        return [e.tolist() for e in embs]
+
+
+class HashingEmbeddings(BaseEmbeddings):
+    """
+    Deterministic semantic-hash dense embedding generator for testing only.
+    Guarantees normalized unit vectors with zero network dependencies or weights.
+    """
+
+    def __init__(self, dimension: int = 384):
         self.dimension = dimension
 
     def _hash_token(self, token: str) -> int:
@@ -66,6 +93,10 @@ class FastDenseEmbeddings(BaseEmbeddings):
 
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
         return [self.embed_text(t) for t in texts]
+
+
+# Alias for backward compatibility
+FastDenseEmbeddings = HashingEmbeddings
 
 
 class OpenAIEmbeddings(BaseEmbeddings):
