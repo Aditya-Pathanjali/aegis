@@ -129,21 +129,14 @@ class VerificationAgent(BaseAgent):
 
     def _get_judge_llm(self) -> tuple[LLMProvider, str]:
         """Returns (LLMProvider, model_name) for judge model if configured, else self.llm."""
-        cfg = get_settings()
+        cfg = getattr(self.llm, "settings", None) or get_settings()
         if cfg.judge_model:
             from aegis.llm import get_llm_provider
 
-            judge_llm = get_llm_provider(model=cfg.judge_model)
-            return judge_llm, cfg.judge_model
+            judge_llm = get_llm_provider(settings=cfg.model_copy(update={"model": cfg.judge_model}))
+            return judge_llm, judge_llm.model
 
-        if self.llm is not None:
-            model_name = getattr(self.llm, "model", cfg.model or "unknown")
-            return self.llm, str(model_name)
-
-        from aegis.llm import get_llm_provider
-
-        llm = get_llm_provider(model=cfg.model)
-        return llm, str(cfg.model or "unknown")
+        return self.llm, self.llm.model
 
     def execute(
         self,

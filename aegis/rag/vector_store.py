@@ -126,9 +126,8 @@ class PostgresVectorStore(BaseVectorStore):
         from psycopg_pool import ConnectionPool
 
         self.timeout = timeout
-        self.connection_url = connection_url or os.getenv(
-            "DATABASE_URL", "postgresql://aegis:aegis_secret@localhost:5432/aegis_db"
-        )
+        conn_url = connection_url or os.getenv("DATABASE_URL") or "postgresql://aegis:aegis_secret@localhost:5432/aegis_db"
+        self.connection_url: str = conn_url
         self.pool = ConnectionPool(self.connection_url, min_size=1, max_size=10, open=True)
         self._init_db()
 

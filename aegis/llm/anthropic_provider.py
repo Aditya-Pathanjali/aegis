@@ -7,7 +7,7 @@ import time
 from typing import Any, Dict, List, Optional, Type, TypeVar
 
 import anthropic
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from aegis.config import Settings, get_settings
 from aegis.llm.errors import LLMRequestError, StructuredOutputError
@@ -24,7 +24,7 @@ from aegis.llm.types import (
     Usage,
 )
 
-T = TypeVar("T")
+T = TypeVar("T", bound=BaseModel)
 
 
 class AnthropicProvider:

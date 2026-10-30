@@ -6,7 +6,7 @@ import logging
 import time
 import uuid
 from datetime import UTC, datetime
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union, cast
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -25,6 +25,8 @@ from aegis.models.schemas import (
     HumanApprovalRequest,
     TaskStatus,
     TraceEvent,
+    VerificationMetrics,
+    VerificationResult,
 )
 from aegis.orchestration.router import (
     evaluate_quality_pass,
@@ -98,7 +100,7 @@ class AegisOrchestrator:
             details=details or {},
             duration_ms=round(duration_ms, 2),
             token_usage=token_usage,
-            cost_usd=cost_usd,
+            estimated_cost_usd=cost_usd,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             call_count=call_count,
@@ -352,6 +354,21 @@ class AegisOrchestrator:
 
         results = state.get("specialist_results", {})
         v_res = state.get("verification_result")
+        if v_res is None:
+            v_res = VerificationResult(
+                status="needs_revision",
+                claims=[],
+                metrics=VerificationMetrics(
+                    supported=0,
+                    contradicted=0,
+                    unsupported=0,
+                    no_evidence=0,
+                    supported_ratio=None,
+                    citation_coverage=None,
+                    numeric_mismatches=0,
+                    quality_pass=False,
+                ),
+            )
         retry_count = state.get("retry_count", 0)
         from aegis.config import get_settings
 
@@ -431,11 +448,28 @@ class AegisOrchestrator:
         cfg = get_settings()
         max_retries = state.get("max_retries", getattr(cfg, "max_agent_retries", 2))
 
+        v_res = state.get("verification_result")
+        if v_res is None:
+            v_res = VerificationResult(
+                status="needs_revision",
+                claims=[],
+                metrics=VerificationMetrics(
+                    supported=0,
+                    contradicted=0,
+                    unsupported=0,
+                    no_evidence=0,
+                    supported_ratio=None,
+                    citation_coverage=None,
+                    numeric_mismatches=0,
+                    quality_pass=False,
+                ),
+            )
+
         report = self.synthesizer_agent.execute(
             task_id=state["task_id"],
             query=state["query"],
             specialist_results=state.get("specialist_results", {}),
-            verification_result=state.get("verification_result"),
+            verification_result=v_res,
             critic_evaluation=state.get("critic_evaluation"),
             trace_events=state.get("trace_events", []),
             retries_count=state.get("retry_count", 0),
@@ -705,12 +739,12 @@ class AegisOrchestrator:
                         current_state.update(node_update)
             if on_node_finish:
                 try:
-                    on_node_finish(current_state)
+                    on_node_finish(cast(AegisState, current_state))
                 except Exception as exc:
                     logger.exception("Error in on_node_finish during run: %s", exc)
                     raise
 
-        return current_state
+        return cast(AegisState, current_state)
 
     def resume(
         self,
@@ -735,9 +769,9 @@ class AegisOrchestrator:
                         current_state.update(node_update)
             if on_node_finish:
                 try:
-                    on_node_finish(current_state)
+                    on_node_finish(cast(AegisState, current_state))
                 except Exception as exc:
                     logger.exception("Error in on_node_finish during run: %s", exc)
                     raise
 
-        return current_state
+        return cast(AegisState, current_state)

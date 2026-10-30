@@ -15,7 +15,7 @@ from aegis.llm.types import (
     Usage,
 )
 
-T = TypeVar("T")
+T = TypeVar("T", bound=BaseModel)
 
 
 def fake_text(
@@ -91,8 +91,10 @@ class FakeLLM:
         self,
         responses: Optional[List[Any]] = None,
         model: str = "fake-model",
+        settings: Optional[Any] = None,
     ) -> None:
         self.model = model
+        self.settings = settings
         self.responses: List[Any] = list(responses or [])
         self.calls: List[Dict[str, Any]] = []
         self.requests = self.calls  # Alias for backward compatibility

@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import pandas as pd
 import pydantic
 import pytest
 
 from aegis.agents.critic import CriticAgent, CriticRubricOutput
 from aegis.agents.verification import JudgeVerdict, VerificationAgent
+from aegis.config import Settings
 from aegis.models.schemas import (
     AgentExecutionResult,
     AgentRole,
     CriticEvaluation,
     EvidenceRef,
     ExecutionPlan,
+    FinalReport,
     Finding,
     SpecialistOutput,
     SubTask,
@@ -24,6 +27,7 @@ from aegis.models.schemas import (
 )
 from aegis.orchestration.graph import AegisOrchestrator
 from aegis.orchestration.state import AegisState
+from aegis.tools.context import TaskContext
 from tests.fakes import FakeLLM, fake_text, fake_tool_call
 
 
@@ -563,3 +567,208 @@ def test_different_questions_produce_different_final_reports():
     assert rep_b.executive_summary.overall_confidence is None
     assert rep_a.executive_summary.business_impact == ""
     assert rep_b.executive_summary.business_impact == ""
+
+
+def test_judge_model_set_builds_judge_with_that_model_and_counts_calls(monkeypatch):
+    """When judge_model is set, the judge is built with that model and the task's provider,
+    and its calls are counted under that model."""
+    task_settings = Settings(provider="openai", model="gpt-4o", judge_model="gpt-4o-mini")
+    task_llm = FakeLLM(model="gpt-4o", settings=task_settings)
+
+    call_id = "call-judge-1"
+    evidence_text = "Operational vibration RMS is 2.1 mm/s."
+    tool_rec = ToolCallRecord(
+        call_id=call_id,
+        tool_name="sql_query",
+        arguments={},
+        output={"text": evidence_text},
+        execution_time_ms=5.0,
+        success=True,
+    )
+    finding = Finding(
+        statement="Operational vibration RMS is 2.1 mm/s.",
+        evidence=[EvidenceRef(kind="tool_call", ref_id=call_id)],
+    )
+    spec_res = AgentExecutionResult(
+        subtask_id="st-test",
+        agent_role=AgentRole.DATA_ANALYST,
+        output_summary="Audit output",
+        findings=[finding],
+        tool_calls=[tool_rec],
+    )
+
+    fake_judge_llm = FakeLLM(
+        responses=[JudgeVerdict(verdict="supported", quote_span="2.1 mm/s", rationale="Matches evidence")],
+        model="gpt-4o-mini",
+    )
+
+    created_with_settings = []
+
+    def mock_get_llm_provider(settings=None):
+        created_with_settings.append(settings)
+        return fake_judge_llm
+
+    monkeypatch.setattr("aegis.llm.get_llm_provider", mock_get_llm_provider)
+
+    verifier = VerificationAgent(llm_provider=task_llm)
+    v_res = verifier.execute(specialist_results=[spec_res], original_query="Check vibration")
+
+    # Built with that model and the task's provider
+    assert len(created_with_settings) == 1
+    assert created_with_settings[0].provider == "openai"
+    assert created_with_settings[0].model == "gpt-4o-mini"
+
+    # Judge called, task LLM not called
+    assert len(fake_judge_llm.calls) == 1
+    assert len(task_llm.calls) == 0
+
+    # Calls counted under that model
+    assert v_res.metadata["model"] == "gpt-4o-mini"
+    assert v_res.metadata["judge_model"] == "gpt-4o-mini"
+    assert v_res.metadata["call_count"] == 1
+
+
+def test_judge_model_unset_uses_self_llm():
+    """When judge_model is unset, the judge is self.llm."""
+    task_settings = Settings(provider="openai", model="gpt-4o", judge_model=None)
+    fake_judge_verdict = JudgeVerdict(verdict="supported", quote_span="2.1 mm/s", rationale="Matches evidence")
+    task_llm = FakeLLM(responses=[fake_judge_verdict], model="gpt-4o", settings=task_settings)
+
+    verifier = VerificationAgent(llm_provider=task_llm)
+    judge_provider, judge_model_name = verifier._get_judge_llm()
+
+    assert judge_provider is task_llm
+    assert judge_model_name == "gpt-4o"
+
+    call_id = "call-judge-2"
+    tool_rec = ToolCallRecord(
+        call_id=call_id,
+        tool_name="sql_query",
+        arguments={},
+        output={"text": "Operational vibration RMS is 2.1 mm/s."},
+        execution_time_ms=5.0,
+        success=True,
+    )
+    finding = Finding(
+        statement="Operational vibration RMS is 2.1 mm/s.",
+        evidence=[EvidenceRef(kind="tool_call", ref_id=call_id)],
+    )
+    spec_res = AgentExecutionResult(
+        subtask_id="st-test",
+        agent_role=AgentRole.DATA_ANALYST,
+        output_summary="Audit output",
+        findings=[finding],
+        tool_calls=[tool_rec],
+    )
+
+    v_res = verifier.execute(specialist_results=[spec_res], original_query="Check vibration")
+    assert len(task_llm.calls) == 1
+    assert v_res.metadata["model"] == "gpt-4o"
+    assert v_res.metadata["judge_model"] == "gpt-4o"
+    assert v_res.metadata["call_count"] == 1
+
+
+def test_end_to_end_mocked_graph_run_with_judge_model_set_reaches_final_report(monkeypatch):
+    """End-to-end mocked graph run with judge_model set reaches FinalReport and uses judge_model."""
+    task_settings = Settings(provider="openai", model="gpt-4o", judge_model="gpt-4o-judge")
+
+    df = pd.DataFrame({"sensor_1": [10.0, 20.0, 30.0], "vibration": [2.1, 2.1, 2.1]})
+    task_ctx = TaskContext(dataset=df)
+
+    call_id = "call-da-e2e-1"
+    plan = ExecutionPlan(
+        task_id="t-judge-e2e",
+        objective="Inspect vibration anomalies",
+        subtasks=[
+            SubTask(
+                id="st-1",
+                description="Query dataset metrics",
+                assigned_agent=AgentRole.DATA_ANALYST,
+                required_tools=["sql_query"],
+            )
+        ],
+    )
+    tool_resp = fake_tool_call(
+        name="sql_query",
+        args={"query": "SELECT AVG(vibration) as avg_vib FROM dataset;"},
+        tool_call_id=call_id,
+    )
+    spec_text = fake_text("Vibration average is 2.1 mm/s.")
+    spec_out = SpecialistOutput(
+        summary="Analysis complete.",
+        findings=[
+            Finding(
+                statement="Dataset vibration average is 2.1 mm/s.",
+                evidence=[EvidenceRef(kind="tool_call", ref_id=call_id)],
+            )
+        ],
+        limitations=[],
+    )
+    critic_pass = CriticRubricOutput(
+        answers_question=9.0,
+        uses_task_data=9.0,
+        claims_verified=9.0,
+        limitations_stated=9.0,
+    )
+    synth_report = SynthesizerOutput(
+        title="Vibration Diagnostic Report",
+        final_finding="Vibration is within acceptable ISO tolerances.",
+        key_conclusions=["2.1 mm/s average velocity RMS."],
+        actionable_recommendations=["Maintain standard monitoring."],
+    )
+
+    fake_task_llm = FakeLLM(
+        responses=[
+            plan,
+            tool_resp,
+            spec_text,
+            spec_out,
+            critic_pass,
+            synth_report,
+        ],
+        model="gpt-4o",
+        settings=task_settings,
+    )
+
+    fake_judge_llm = FakeLLM(
+        responses=[
+            JudgeVerdict(verdict="supported", quote_span="2.1", rationale="Query result matches claim"),
+        ],
+        model="gpt-4o-judge",
+    )
+
+    created_judges = []
+
+    def mock_get_llm_provider(settings=None):
+        created_judges.append(settings)
+        return fake_judge_llm
+
+    monkeypatch.setattr("aegis.llm.get_llm_provider", mock_get_llm_provider)
+
+    try:
+        orch = AegisOrchestrator(llm_provider=fake_task_llm, task_context=task_ctx)
+        result = orch.run({
+            "task_id": "t-judge-e2e",
+            "query": "Check vibration metrics",
+            "has_dataset": True,
+            "require_human_approval": False,
+            "max_retries": 0,
+        })
+
+        assert result["status"] == TaskStatus.COMPLETED
+        assert result["final_report"] is not None
+        assert isinstance(result["final_report"], FinalReport)
+
+        # Verification used judge_llm
+        assert len(created_judges) == 1
+        assert created_judges[0].model == "gpt-4o-judge"
+        assert created_judges[0].provider == "openai"
+        assert len(fake_judge_llm.calls) == 1
+
+        # Check trace events recorded judge model
+        verify_events = [e for e in result["trace_events"] if e.event_type == "verify" and e.model == "gpt-4o-judge"]
+        assert len(verify_events) >= 1
+        assert verify_events[0].call_count == 1
+    finally:
+        task_ctx.cleanup()
+

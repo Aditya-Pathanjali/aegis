@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from typing import List, Optional, Protocol, Type, TypeVar, runtime_checkable
 
+from pydantic import BaseModel
+
 from aegis.llm.types import LLMResponse, Message, StructuredResult, ToolSpec
 
-T = TypeVar("T")
+T = TypeVar("T", bound=BaseModel)
 
 
 @runtime_checkable
 class LLMProvider(Protocol):
     """Protocol for provider-neutral LLM execution."""
+
+    model: str
 
     def chat(
         self,
