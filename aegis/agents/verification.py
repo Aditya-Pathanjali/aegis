@@ -7,12 +7,11 @@ import re
 import time
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
-
 from aegis.agents.base import BaseAgent
 from aegis.config import get_settings
 from aegis.llm.pricing import calculate_cost
 from aegis.llm.types import Message, TextBlock, Usage
+from aegis.models.llm_outputs import JudgeVerdict
 from aegis.models.schemas import (
     AgentExecutionResult,
     AgentRole,
@@ -25,12 +24,6 @@ from aegis.models.schemas import (
 if TYPE_CHECKING:
     from aegis.llm.base import LLMProvider
     from aegis.tools.registry import ToolRegistry
-
-
-class JudgeVerdict(BaseModel):
-    verdict: Literal["supported", "contradicted", "not_enough_info"]
-    quote_span: str = Field(default="", description="Exact verbatim substring quoted from the evidence text.")
-    rationale: str = Field(default="", description="Explanation of verification verdict.")
 
 
 def extract_numbers(text: str) -> List[float]:

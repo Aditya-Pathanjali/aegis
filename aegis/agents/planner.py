@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from aegis.agents.base import BaseAgent
 from aegis.llm.types import Message, StructuredResult, TextBlock, Usage
+from aegis.models.llm_outputs import PlanOutput
 from aegis.models.schemas import AgentRole, ExecutionPlan, SubTask
 from aegis.tools.registry import ToolRegistry, get_tool_registry
 
@@ -136,6 +137,34 @@ class PlannerAgent(BaseAgent):
         super().__init__(role=AgentRole.PLANNER, llm_provider=llm_provider, tool_registry=tool_registry)
         self.last_structured_result: Optional[StructuredResult] = None
 
+    def _build_execution_plan(self, output_val: Any, query: str) -> ExecutionPlan:
+        """Converts an LLM-facing PlanOutput into a runtime ExecutionPlan, or passes through ExecutionPlan."""
+        if isinstance(output_val, PlanOutput):
+            subtasks = [
+                SubTask(
+                    id=ps.id,
+                    description=ps.description,
+                    role=ps.role,
+                    tools=list(ps.tools),
+                    depends_on=list(ps.depends_on),
+                    title=ps.description,
+                    status="pending",
+                )
+                for ps in output_val.subtasks
+            ]
+            return ExecutionPlan(
+                subtasks=subtasks,
+                task_id=str(uuid.uuid4())[:8],
+                original_query=query,
+                objective=output_val.objective,
+                rationale=output_val.rationale,
+            )
+        elif isinstance(output_val, ExecutionPlan):
+            output_val.task_id = output_val.task_id or str(uuid.uuid4())[:8]
+            output_val.original_query = query
+            return output_val
+        raise TypeError(f"Expected PlanOutput or ExecutionPlan, got {type(output_val)}")
+
     def execute(
         self,
         query: str,
@@ -157,13 +186,11 @@ class PlannerAgent(BaseAgent):
         # Initial generation attempt
         result: StructuredResult = self.llm.structured(
             messages=[msg],
-            schema=ExecutionPlan,
+            schema=PlanOutput,
             system=self.SYSTEM_PROMPT,
         )
         self.last_structured_result = result
-        plan: ExecutionPlan = result.value
-        plan.task_id = plan.task_id or str(uuid.uuid4())[:8]
-        plan.original_query = query
+        plan: ExecutionPlan = self._build_execution_plan(result.value, query)
 
         reg = self.tool_registry or get_tool_registry()
         errors = validate_plan(plan, has_dataset=has_dataset, tool_registry=reg)
@@ -173,7 +200,7 @@ class PlannerAgent(BaseAgent):
             repair_text = (
                 "The previously generated plan failed validation with the following errors:\n"
                 + "\n".join(f"- {e}" for e in errors)
-                + "\nPlease correct these errors and regenerate a valid ExecutionPlan conforming strictly to all rules."
+                + "\nPlease correct these errors and regenerate a valid PlanOutput conforming strictly to all rules."
             )
             repair_messages = [
                 msg,
@@ -183,7 +210,7 @@ class PlannerAgent(BaseAgent):
 
             repair_result: StructuredResult = self.llm.structured(
                 messages=repair_messages,
-                schema=ExecutionPlan,
+                schema=PlanOutput,
                 system=self.SYSTEM_PROMPT,
             )
 
@@ -194,9 +221,7 @@ class PlannerAgent(BaseAgent):
                 repair_result.usage = Usage(input_tokens=total_in, output_tokens=total_out)
             self.last_structured_result = repair_result
 
-            plan = repair_result.value
-            plan.task_id = plan.task_id or str(uuid.uuid4())[:8]
-            plan.original_query = query
+            plan = self._build_execution_plan(repair_result.value, query)
 
             second_errors = validate_plan(plan, has_dataset=has_dataset, tool_registry=reg)
             if second_errors:

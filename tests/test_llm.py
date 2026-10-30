@@ -1066,3 +1066,115 @@ def test_structured_tool_usage_accumulates_when_first_fails_validation():
     assert result.usage.input_tokens == 220  # 95 + 125
     assert result.usage.output_tokens == 70  # 30 + 40
 
+
+# ==============================================================================
+# Mocked SDK Schema Conversion Enforcement Tests
+# ==============================================================================
+
+def test_anthropic_structured_mock_exercises_real_sdk_transform():
+    """
+    Mocked Anthropic client parse() wraps the real SDK transform_schema(),
+    ensuring invalid schemas fail in unit tests the same way they fail live.
+    """
+    import anthropic.lib._parse._transform as ant_trans
+
+    from aegis.models.llm_outputs import PlannedSubtask, PlanOutput
+    from aegis.models.schemas import ExecutionPlan
+
+    mock_client = MagicMock()
+
+    def parse_with_real_sdk_transform(*args, **kwargs):
+        output_format = kwargs.get("output_format")
+        # Run real Anthropic SDK schema transformation
+        ant_trans.transform_schema(output_format)
+
+        # If transform succeeds, return mocked ParsedMessage
+        mock_resp = MagicMock()
+        mock_resp.model = "claude-sonnet-5-5-20261022"
+        parsed_block = MagicMock()
+        parsed_block.parsed_output = PlanOutput(
+            objective="Decompose vibration diagnostic",
+            rationale="Unit test plan",
+            subtasks=[PlannedSubtask(id="st-1", description="Research standards", role="research")],
+        )
+        mock_resp.content = [parsed_block]
+        mock_resp.usage.input_tokens = 60
+        mock_resp.usage.output_tokens = 30
+        return mock_resp
+
+    mock_client.messages.parse.side_effect = parse_with_real_sdk_transform
+    provider = AnthropicProvider(model="claude-sonnet-5-5", api_key="fake", client=mock_client)
+
+    # 1. Bad runtime schema (ExecutionPlan with Any/output) fails live with ValueError
+    with pytest.raises(ValueError, match="Schema must have a 'type', 'anyOf', 'oneOf', or 'allOf' field"):
+        provider.structured(
+            [Message(role="user", content=[TextBlock(text="Plan vibration inspection")])],
+            schema=ExecutionPlan,
+        )
+
+    # 2. Pure LLM-facing schema (PlanOutput) succeeds cleanly
+    result = provider.structured(
+        [Message(role="user", content=[TextBlock(text="Plan vibration inspection")])],
+        schema=PlanOutput,
+    )
+    assert isinstance(result.value, PlanOutput)
+    assert result.value.objective == "Decompose vibration diagnostic"
+    assert result.usage.input_tokens == 60
+    assert result.usage.output_tokens == 30
+
+
+def test_openai_structured_mock_exercises_real_sdk_transform():
+    """
+    Mocked OpenAI client parse() wraps the real SDK to_strict_json_schema(),
+    ensuring invalid schemas fail in unit tests the same way they fail live.
+    """
+    import openai.lib._pydantic as oai_pyd
+
+    from aegis.models.llm_outputs import PlannedSubtask, PlanOutput
+
+    mock_client = MagicMock()
+
+    def parse_with_real_sdk_strict_schema(*args, **kwargs):
+        response_format = kwargs.get("response_format")
+        # Run real OpenAI SDK schema conversion
+        oai_pyd.to_strict_json_schema(response_format)
+
+        # If strict conversion succeeds, return mocked ParsedChatCompletion
+        mock_resp = MagicMock()
+        mock_resp.model = "gpt-4o-2024-08-06"
+        choice = MagicMock()
+        choice.message.parsed = PlanOutput(
+            objective="Decompose vibration diagnostic OpenAI",
+            rationale="Unit test plan",
+            subtasks=[PlannedSubtask(id="st-1", description="Research standards", role="research")],
+        )
+        choice.message.refusal = None
+        mock_resp.choices = [choice]
+        mock_resp.usage.prompt_tokens = 70
+        mock_resp.usage.completion_tokens = 35
+        return mock_resp
+
+    mock_client.chat.completions.parse.side_effect = parse_with_real_sdk_strict_schema
+    provider = OpenAIProvider(model="gpt-4o", api_key="fake", client=mock_client)
+
+    # 1. Non-BaseModel schema fails via OpenAI's real to_strict_json_schema
+    class InvalidSchemaNonModel:
+        pass
+
+    with pytest.raises(TypeError, match="Non BaseModel types are only supported"):
+        provider.structured(
+            [Message(role="user", content=[TextBlock(text="Plan task")])],
+            schema=InvalidSchemaNonModel,
+        )
+
+    # 2. Pure LLM-facing schema (PlanOutput) succeeds cleanly
+    result = provider.structured(
+        [Message(role="user", content=[TextBlock(text="Plan task")])],
+        schema=PlanOutput,
+    )
+    assert isinstance(result.value, PlanOutput)
+    assert result.value.objective == "Decompose vibration diagnostic OpenAI"
+    assert result.usage.input_tokens == 70
+    assert result.usage.output_tokens == 35
+
+

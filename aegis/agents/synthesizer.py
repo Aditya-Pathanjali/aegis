@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Union
 from aegis.agents.base import BaseAgent
 from aegis.llm.pricing import calculate_cost
 from aegis.llm.types import Message, TextBlock
+from aegis.models.llm_outputs import SynthesizerOutput
 from aegis.models.schemas import (
     AgentExecutionResult,
     AgentRole,
     CriticEvaluation,
     ExecutiveSummary,
     FinalReport,
-    SynthesizerOutput,
     TraceEvent,
     VerificationResult,
 )
