@@ -129,10 +129,12 @@ def test_graph_outputs_strictly_derived_from_input_and_fake_llm():
         "query": query_1,
         "has_dataset": False,
         "require_human_approval": False,
-        "max_retries": 1,
+        "max_retries": 0,
         "retry_count": 0,
     }
     res_1 = orch_1.run(state_1)
+    if res_1.get("status") == TaskStatus.WAITING_APPROVAL:
+        res_1 = orch_1.resume("t-1", {"action": "approve"})
     assert res_1["status"] == TaskStatus.COMPLETED
     report_1 = res_1["final_report"]
 
@@ -165,10 +167,12 @@ def test_graph_outputs_strictly_derived_from_input_and_fake_llm():
         "query": query_2,
         "has_dataset": False,
         "require_human_approval": False,
-        "max_retries": 1,
+        "max_retries": 0,
         "retry_count": 0,
     }
     res_2 = orch_2.run(state_2)
+    if res_2.get("status") == TaskStatus.WAITING_APPROVAL:
+        res_2 = orch_2.resume("t-2", {"action": "approve"})
     assert res_2["status"] == TaskStatus.COMPLETED
     report_2 = res_2["final_report"]
 

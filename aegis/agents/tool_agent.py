@@ -72,6 +72,7 @@ def run_tool_agent(
 
     total_in_tokens = 0
     total_out_tokens = 0
+    total_calls = 0
     all_tool_records: List[ToolCallRecord] = []
     produced_chunk_ids: Set[str] = set()
     produced_tool_ids: Set[str] = set()
@@ -86,6 +87,7 @@ def run_tool_agent(
             tools=tool_specs,
             system=system_prompt,
         )
+        total_calls += 1
         total_in_tokens += resp.usage.input_tokens
         total_out_tokens += resp.usage.output_tokens
 
@@ -207,6 +209,7 @@ def run_tool_agent(
         schema=SpecialistOutput,
         system=system_prompt,
     )
+    total_calls += 1
     total_in_tokens += struct_res.usage.input_tokens
     total_out_tokens += struct_res.usage.output_tokens
 
@@ -247,5 +250,6 @@ def run_tool_agent(
             "attempts": struct_res.attempts,
             "model": struct_res.model,
             "cost_usd": cost_usd,
+            "call_count": total_calls,
         },
     )

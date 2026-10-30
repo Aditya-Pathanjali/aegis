@@ -48,19 +48,24 @@ def evaluate_quality_pass(state: AegisState) -> str:
 
 
 def route_human_gate_or_complete(state: AegisState) -> str:
-    """
-    Evaluates whether human review is mandated due to:
-    1. Explicit user configuration (require_human_approval=True)
-    2. Low confidence (< 0.75) when confidence is present
-    3. Critical / high risk operational actions
-    """
+    """Evaluates whether human review is mandated."""
     if state.get("require_human_approval", False):
         return "human_gate_node"
 
-    report = state.get("final_report")
-    if report:
-        conf = report.executive_summary.overall_confidence
-        if conf is not None and conf < 0.75:
+    critic = state.get("critic_evaluation")
+    if critic and not critic.quality_pass:
+        return "human_gate_node"
+
+    v_res = state.get("verification_result")
+    if v_res and v_res.metrics:
+        if v_res.metrics.contradicted > 0 or v_res.metrics.supported_ratio < 0.8:
             return "human_gate_node"
 
+    return "__end__"
+
+
+def route_after_human_gate(state: AegisState) -> str:
+    """Routes back to planner if human requested reanalysis, else completes."""
+    if state.get("status") == "retrying":
+        return "planner_node"
     return "__end__"

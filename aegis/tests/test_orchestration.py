@@ -3,10 +3,13 @@
 import time
 
 from aegis.agents.critic import CriticRubricOutput
+from aegis.agents.verification import JudgeVerdict
 from aegis.models.schemas import (
     AgentRole,
     ApprovalAction,
+    EvidenceRef,
     ExecutionPlan,
+    Finding,
     SpecialistOutput,
     SubTask,
     SynthesizerOutput,
@@ -16,7 +19,8 @@ from aegis.models.schemas import (
 from aegis.orchestration.graph import AegisOrchestrator
 from aegis.orchestration.state import AegisState
 from aegis.services.orchestrator_service import OrchestratorService
-from tests.fakes import FakeLLM, fake_text
+from aegis.tools.context import TaskContext
+from tests.fakes import FakeLLM, fake_text, fake_tool_call
 
 
 def test_orchestrator_complete_run():
@@ -41,8 +45,22 @@ def test_orchestrator_complete_run():
             ),
         ],
     )
-    res_1 = SpecialistOutput(summary="Research done.", findings=[], limitations=[])
-    res_2 = SpecialistOutput(summary="Data analysis done.", findings=[], limitations=[])
+    call_id_1 = "call-rag-1"
+    tool_resp_1 = fake_tool_call(name="rag_search", args={"query": "guidelines"}, tool_call_id=call_id_1)
+    res_1 = SpecialistOutput(
+        summary="Research done.",
+        findings=[Finding(statement="Literature review of guidelines completed.", evidence=[EvidenceRef(kind="tool_call", ref_id=call_id_1)])],
+        limitations=[],
+    )
+    call_id_2 = "call-sql-2"
+    tool_resp_2 = fake_tool_call(name="sql_query", args={"sql": "SELECT 3.2"}, tool_call_id=call_id_2)
+    res_2 = SpecialistOutput(
+        summary="Data analysis done.",
+        findings=[Finding(statement="Peak vibration measured 3.2 mm/s.", evidence=[EvidenceRef(kind="tool_call", ref_id=call_id_2)])],
+        limitations=[],
+    )
+    judge_1 = JudgeVerdict(verdict="supported", quote_span="guidelines", rationale="Matches RAG")
+    judge_2 = JudgeVerdict(verdict="supported", quote_span="3.2", rationale="Matches SQL")
     critic_rubric = CriticRubricOutput(
         answers_question=8.0, uses_task_data=8.0, claims_verified=8.0, limitations_stated=8.0
     )
@@ -52,8 +70,9 @@ def test_orchestrator_complete_run():
         key_conclusions=["All subsystems operational."],
         actionable_recommendations=["Proceed with planned maintenance."],
     )
-    fake_llm = FakeLLM(responses=[plan, fake_text("Done."), res_1, fake_text("Done."), res_2, critic_rubric, synth_draft])
-    orchestrator = AegisOrchestrator(llm_provider=fake_llm)
+    fake_llm = FakeLLM(responses=[plan, tool_resp_1, fake_text("Done."), res_1, tool_resp_2, fake_text("Done."), res_2, judge_1, judge_2, critic_rubric, synth_draft])
+    task_context = TaskContext(task_id="test-orch-1")
+    orchestrator = AegisOrchestrator(llm_provider=fake_llm, task_context=task_context)
     initial_state: AegisState = {
         "task_id": "test-orch-1",
         "query": "Evaluate equipment maintenance feasibility.",
@@ -103,7 +122,7 @@ def test_human_gate_triggering_and_approval():
         TaskSubmission(
             query="Analyze equipment with mandatory sign-off.",
             require_human_approval=True,
-            max_retries=1,
+            max_retries=0,
         )
     )
 

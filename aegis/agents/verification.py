@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field
 
 from aegis.agents.base import BaseAgent
 from aegis.config import get_settings
-from aegis.llm.types import Message, TextBlock
+from aegis.llm.pricing import calculate_cost
+from aegis.llm.types import Message, TextBlock, Usage
 from aegis.models.schemas import (
     AgentExecutionResult,
     AgentRole,
@@ -169,6 +170,10 @@ class VerificationAgent(BaseAgent):
         unsupported_claims: List[str] = []
         judge_provider, judge_model_name = self._get_judge_llm()
 
+        total_judge_in_tokens = 0
+        total_judge_out_tokens = 0
+        total_judge_calls = 0
+
         for s_res in results_list:
             for finding in s_res.findings:
                 statement = finding.statement.strip()
@@ -213,6 +218,10 @@ class VerificationAgent(BaseAgent):
                     schema=JudgeVerdict,
                     system=self.SYSTEM_PROMPT,
                 )
+                total_judge_calls += 1
+                total_judge_in_tokens += judge_resp.usage.input_tokens
+                total_judge_out_tokens += judge_resp.usage.output_tokens
+                judge_model_name = judge_resp.model
                 verdict: Literal["supported", "contradicted", "not_enough_info"] = judge_resp.value.verdict
                 quote_span = (judge_resp.value.quote_span or "").strip()
 
@@ -323,6 +332,12 @@ class VerificationAgent(BaseAgent):
             f"{contradicted_count} contradictions, {numeric_mismatches} numeric mismatches. Quality pass: {quality_pass}."
         )
 
+        judge_cost = (
+            calculate_cost(judge_model_name, total_judge_in_tokens, total_judge_out_tokens)
+            if (judge_model_name and total_judge_calls > 0)
+            else None
+        )
+
         return VerificationResult(
             status=status_str,
             claims=claims_verified,
@@ -330,5 +345,13 @@ class VerificationAgent(BaseAgent):
             unsupported_claims=unsupported_claims,
             audit_notes=audit_notes,
             verification_time_seconds=duration,
-            metadata={"judge_model": judge_model_name},
+            usage=Usage(input_tokens=total_judge_in_tokens, output_tokens=total_judge_out_tokens)
+            if total_judge_calls > 0
+            else None,
+            metadata={
+                "call_count": total_judge_calls,
+                "model": judge_model_name,
+                "judge_model": judge_model_name,
+                "cost_usd": judge_cost,
+            },
         )

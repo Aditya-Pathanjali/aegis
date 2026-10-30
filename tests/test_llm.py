@@ -842,7 +842,7 @@ def test_planner_trace_event_tokens_equal_fake_llm_usage():
         "query": "Check pump vibration",
         "has_dataset": False,
         "require_human_approval": False,
-        "max_retries": 1,
+        "max_retries": 0,
         "retry_count": 0,
     }
     result = orch.run(state)

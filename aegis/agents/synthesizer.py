@@ -95,6 +95,7 @@ class SynthesizerAgent(BaseAgent):
             schema=SynthesizerOutput,
             system=self.SYSTEM_PROMPT,
         )
+        self.last_structured_result = struct_res
 
         output_val = struct_res.value
         synth_in_tokens = struct_res.usage.input_tokens
@@ -143,10 +144,20 @@ class SynthesizerAgent(BaseAgent):
             2,
         )
         total_tokens = sum(t.token_usage for t in traces) + (synth_in_tokens + synth_out_tokens)
-        cost_sum = sum(t.estimated_cost_usd for t in traces if t.estimated_cost_usd is not None)
-        if synth_cost is not None:
-            cost_sum += synth_cost
-        total_cost = round(cost_sum, 6) if cost_sum > 0 else 0.0
+        has_unpriced = any(
+            (t.call_count > 0 or t.token_usage > 0) and t.cost_usd is None
+            for t in traces
+        )
+        if synth_cost is None and (synth_in_tokens > 0 or synth_out_tokens > 0):
+            has_unpriced = True
+
+        if has_unpriced:
+            total_cost_usd = None
+        else:
+            cost_sum = sum(t.cost_usd for t in traces if t.cost_usd is not None)
+            if synth_cost is not None:
+                cost_sum += synth_cost
+            total_cost_usd = round(cost_sum, 6)
 
         return FinalReport(
             task_id=task_id,
@@ -161,6 +172,6 @@ class SynthesizerAgent(BaseAgent):
             limitations=report_limitations,
             total_execution_time_seconds=total_exec_seconds,
             total_tokens=total_tokens,
-            total_cost_usd=round(total_cost, 4),
+            total_cost_usd=total_cost_usd,
             retries_count=retries_count,
         )

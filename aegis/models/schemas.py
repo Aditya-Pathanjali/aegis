@@ -165,6 +165,7 @@ class VerificationResult(BaseModel):
     unsupported_claims: List[str] = Field(default_factory=list)
     audit_notes: str = ""
     verification_time_seconds: float = 0.0
+    usage: Optional[Usage] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -182,6 +183,8 @@ class CriticEvaluation(BaseModel):
     critique_summary: str = ""
     retry_recommendations: Optional[str] = None
     target_subtask_for_retry: Optional[str] = None
+    usage: Optional[Usage] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class SynthesizerOutput(BaseModel):
@@ -205,6 +208,8 @@ class ExecutiveSummary(BaseModel):
 
 
 class TraceEvent(BaseModel):
+    model_config = {"populate_by_name": True}
+
     event_id: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     task_id: str
@@ -214,10 +219,33 @@ class TraceEvent(BaseModel):
     details: Dict[str, Any] = Field(default_factory=dict)
     duration_ms: float = 0.0
     token_usage: int = 0
-    estimated_cost_usd: Optional[float] = 0.0
+    total_tokens: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    call_count: int = 0
+    cost_usd: Optional[float] = Field(default=None, alias="estimated_cost_usd")
     model: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_token_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            tok = data.get("total_tokens") or data.get("token_usage") or 0
+            if tok == 0:
+                in_tok = data.get("input_tokens") or 0
+                out_tok = data.get("output_tokens") or 0
+                tok = in_tok + out_tok
+            if "total_tokens" not in data or data["total_tokens"] == 0:
+                data["total_tokens"] = tok
+            if "token_usage" not in data or data["token_usage"] == 0:
+                data["token_usage"] = tok
+            if "estimated_cost_usd" in data and "cost_usd" not in data:
+                data["cost_usd"] = data["estimated_cost_usd"]
+        return data
+
+    @property
+    def estimated_cost_usd(self) -> Optional[float]:
+        return self.cost_usd
 
 
 class FinalReport(BaseModel):
@@ -233,7 +261,7 @@ class FinalReport(BaseModel):
     limitations: List[str] = Field(default_factory=list)
     total_execution_time_seconds: float = 0.0
     total_tokens: int = 0
-    total_cost_usd: Optional[float] = 0.0
+    total_cost_usd: Optional[float] = None
     retries_count: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -243,8 +271,10 @@ class HumanApprovalRequest(BaseModel):
     required: bool = False
     status: str = "not_required"  # not_required, pending, approved, rejected, revision_requested
     reason: str = ""
+    summary: Optional[str] = None
     risk_level: str = "low"  # low, medium, high
     proposed_actions: List[str] = Field(default_factory=list)
+    required_action: Optional[str] = None
     feedback: Optional[str] = None
     decided_at: Optional[datetime] = None
 

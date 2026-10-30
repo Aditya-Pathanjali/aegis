@@ -496,6 +496,8 @@ def test_retry_cap_reached_routes_to_synthesis():
     }
 
     result = orch.run(state)
+    if result["status"] == TaskStatus.WAITING_APPROVAL:
+        result = orch.resume("t-cap", {"action": "approve"})
     assert result["status"] == TaskStatus.COMPLETED
     assert result["final_report"] is not None
     assert any("Maximum retry limit reached" in lim for lim in result["final_report"].limitations)
