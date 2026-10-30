@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from aegis.models.schemas import AgentRole, ToolCallRecord
 from aegis.tools.base import BaseTool, ToolResult
 from aegis.tools.describe_tool import DescribeDatasetTool
-from aegis.tools.python_sandbox import PythonExecTool, PythonSandboxTool
-from aegis.tools.rag_tool import RAGRetrieverTool, RAGSearchTool
+from aegis.tools.python_sandbox import PythonExecTool
+from aegis.tools.rag_tool import RAGSearchTool
 from aegis.tools.sql_tool import SQLQueryTool
 
 if TYPE_CHECKING:
@@ -28,10 +28,10 @@ class ToolRegistry:
 
     ROLE_PERMISSIONS: Dict[AgentRole, List[str]] = {
         AgentRole.PLANNER: [],
-        AgentRole.RESEARCH: ["rag_search", "rag_retriever"],
-        AgentRole.DATA_ANALYST: ["describe_dataset", "sql_query", "python_exec", "python_sandbox"],
-        AgentRole.VERIFICATION: ["rag_search", "rag_retriever", "python_exec", "python_sandbox"],
-        AgentRole.CRITIC: ["rag_search", "rag_retriever"],
+        AgentRole.RESEARCH: ["rag_search"],
+        AgentRole.DATA_ANALYST: ["describe_dataset", "sql_query", "python_exec"],
+        AgentRole.VERIFICATION: ["rag_search", "python_exec"],
+        AgentRole.CRITIC: ["rag_search"],
         AgentRole.SYNTHESIZER: [],
     }
 
@@ -41,11 +41,9 @@ class ToolRegistry:
 
     def _register_default_tools(self) -> None:
         self.register(RAGSearchTool())
-        self.register(RAGRetrieverTool())
         self.register(DescribeDatasetTool())
         self.register(SQLQueryTool())
         self.register(PythonExecTool())
-        self.register(PythonSandboxTool())
 
     @classmethod
     def from_context(cls, context: TaskContext) -> ToolRegistry:

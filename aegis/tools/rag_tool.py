@@ -46,9 +46,3 @@ class RAGSearchTool(BaseTool):
             "evidence_count": len(formatted_evidence),
             "evidence": formatted_evidence,
         }
-
-
-class RAGRetrieverTool(RAGSearchTool):
-    """Alias for backwards compatibility with existing references."""
-
-    name = "rag_retriever"

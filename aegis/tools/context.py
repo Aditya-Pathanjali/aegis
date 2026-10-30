@@ -45,8 +45,8 @@ class TaskContext:
 
         # Bind tools to this task context
         from aegis.tools.describe_tool import DescribeDatasetTool
-        from aegis.tools.python_sandbox import PythonExecTool, PythonSandboxTool
-        from aegis.tools.rag_tool import RAGRetrieverTool, RAGSearchTool
+        from aegis.tools.python_sandbox import PythonExecTool
+        from aegis.tools.rag_tool import RAGSearchTool
         from aegis.tools.sql_tool import SQLQueryTool
 
         py_tool = PythonExecTool(context=self)
@@ -54,11 +54,9 @@ class TaskContext:
 
         self.tools: Dict[str, BaseTool] = {
             "rag_search": rag_tool,
-            "rag_retriever": RAGRetrieverTool(),
             "describe_dataset": DescribeDatasetTool(context=self),
             "sql_query": SQLQueryTool(context=self),
             "python_exec": py_tool,
-            "python_sandbox": PythonSandboxTool(context=self),
         }
 
     def cleanup(self) -> None:

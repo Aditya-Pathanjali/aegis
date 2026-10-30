@@ -32,10 +32,12 @@ class SafeCodeValidator(ast.NodeVisitor):
     FORBIDDEN_MODULES = {
         "os", "subprocess", "sys", "shutil", "socket", "pty", "commands",
         "multiprocessing", "threading", "ctypes", "winreg", "posix", "importlib",
+        "builtins",
     }
 
     FORBIDDEN_CALLS = {
         "eval", "exec", "__import__", "compile", "open", "breakpoint", "input",
+        "getattr", "setattr", "delattr", "vars", "globals", "locals", "dir", "type",
     }
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -52,6 +54,11 @@ class SafeCodeValidator(ast.NodeVisitor):
                 raise SecurityViolationError(f"Importing from module '{node.module}' is prohibited for security.")
         self.generic_visit(node)
 
+    def visit_Name(self, node: ast.Name) -> None:
+        if node.id in self.FORBIDDEN_CALLS:
+            raise SecurityViolationError(f"Identifier '{node.id}' is prohibited inside the sandbox.")
+        self.generic_visit(node)
+
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Name) and node.func.id in self.FORBIDDEN_CALLS:
             raise SecurityViolationError(f"Function call '{node.func.id}()' is prohibited inside the sandbox.")
@@ -59,7 +66,7 @@ class SafeCodeValidator(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         attr_name = node.attr
-        if attr_name.startswith("_") or attr_name in {"os", "sys", "subprocess"}:
+        if attr_name.startswith("_") or attr_name in {"os", "sys", "subprocess"} or attr_name in self.FORBIDDEN_CALLS:
             raise SecurityViolationError(f"Access to attribute '{attr_name}' is prohibited for security.")
         self.generic_visit(node)
 
@@ -79,13 +86,27 @@ try:
     ns["pandas"] = pd
     ns["np"] = np
     ns["numpy"] = np
-    parquet_path = Path("dataset.parquet")
-    if parquet_path.exists():
+except ImportError:
+    pass
+
+parquet_path = Path("dataset.parquet")
+if parquet_path.exists():
+    try:
+        import pandas as pd
         _df = pd.read_parquet(parquet_path)
         ns["df"] = _df
         ns["dataset"] = _df
-except Exception:
-    pass
+    except Exception as e:
+        err_msg = f"Failed to load dataset.parquet: {e}\n"
+        sys.stderr.write(err_msg)
+        payload = {
+            "stdout": "",
+            "stderr": err_msg,
+            "variables": {},
+            "error": err_msg.strip(),
+        }
+        Path("__results__.json").write_text(json.dumps(payload), encoding="utf-8")
+        sys.exit(1)
 
 code_file = Path("__script__.py")
 if not code_file.exists():
@@ -187,12 +208,9 @@ class PythonExecTool(BaseTool):
 
         def _posix_limits():
             if sys.platform != "win32":
-                try:
-                    import resource
-                    resource.setrlimit(resource.RLIMIT_CPU, (int(timeout), int(timeout) + 1))
-                    resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024 * 1024, 1024 * 1024 * 1024))
-                except Exception:
-                    pass
+                import resource
+                resource.setrlimit(resource.RLIMIT_CPU, (int(timeout), int(timeout) + 1))
+                resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024 * 1024, 1024 * 1024 * 1024))
 
         try:
             proc = subprocess.run(
@@ -261,7 +279,4 @@ class PythonExecTool(BaseTool):
             return self._run_subprocess(code, Path(tmpdir), timeout)
 
 
-class PythonSandboxTool(PythonExecTool):
-    """Backward compatibility wrapper for PythonSandboxTool."""
 
-    name = "python_sandbox"

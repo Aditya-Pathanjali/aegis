@@ -194,3 +194,83 @@ def test_oversized_csv_returns_422(monkeypatch):
         json={"query": "Analyze clean", "dataset_content": messy_csv},
     )
     assert resp_clean.status_code == 200
+
+
+def test_ast_rejects_getattr_probe_and_alias():
+    tool = PythonExecTool()
+
+    # Direct getattr probe
+    probe1 = "import pandas as pd\nm = getattr(pd.io.common, 'o' + 's')\nprint(m.getcwd())"
+    with pytest.raises(SecurityViolationError, match="Identifier 'getattr' is prohibited|prohibited"):
+        tool._validate_ast(probe1)
+
+    res1 = tool.execute(code=probe1)
+    assert res1.success is False
+    assert "SecurityViolationError" in res1.error
+
+    # Alias form probe
+    probe2 = "import pandas as pd\ng = getattr\nm = g(pd.io.common, 'o' + 's')\nprint(m.getcwd())"
+    with pytest.raises(SecurityViolationError, match="Identifier 'getattr' is prohibited|prohibited"):
+        tool._validate_ast(probe2)
+
+    res2 = tool.execute(code=probe2)
+    assert res2.success is False
+    assert "SecurityViolationError" in res2.error
+
+    # Other forbidden identifiers
+    for forbidden in ["setattr", "delattr", "vars", "globals", "locals", "dir", "type"]:
+        code = f"x = {forbidden}"
+        with pytest.raises(SecurityViolationError):
+            tool._validate_ast(code)
+
+
+def test_sql_recursive_cte_query_times_out():
+    tool = SQLQueryTool(timeout_seconds=0.5)
+    query = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) SELECT count(*) FROM c"
+    res = tool.execute(sql=query)
+    assert res.success is False
+    assert "timed out" in res.error.lower()
+
+
+def test_runner_corrupt_parquet_reports_error():
+    tool = PythonExecTool()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        workdir = Path(tmpdir)
+        # Write corrupt parquet
+        (workdir / "dataset.parquet").write_bytes(b"corrupt-parquet-data")
+        with pytest.raises(RuntimeError, match="Failed to load dataset.parquet"):
+            tool._run_subprocess("print('should not execute')", workdir=workdir, timeout=5.0)
+
+
+def test_orchestrator_worker_fails_on_unparseable_csv():
+    from aegis.models.schemas import TaskSubmission
+    from aegis.services.orchestrator_service import OrchestratorService
+    from tests.fakes import FakeLLM
+
+    svc = OrchestratorService(llm_provider=FakeLLM(model="test"))
+    # Give an invalid CSV with inconsistent column counts that causes pandas ParserError
+    bad_submission = TaskSubmission(
+        query="Test unparseable csv",
+        dataset_content="col1,col2\n1,2\n3,4,5,6\n",
+    )
+    task_id = "test-bad-csv-task"
+    initial_state = {
+        "task_id": task_id,
+        "query": bad_submission.query,
+        "status": "pending",
+        "plan": None,
+        "results": {},
+        "verification": None,
+        "critique": None,
+        "final_report": None,
+        "telemetry": None,
+        "human_approval": None,
+        "errors": [],
+        "iteration": 0,
+        "phase": "init",
+    }
+    svc.state_store.save_state(task_id, initial_state)
+    svc._run_workflow_worker(task_id, initial_state, bad_submission)
+    saved = svc.state_store.get_state(task_id)
+    assert saved["status"] == "failed"
+    assert any("Failed to parse dataset" in err or "ParserError" in err for err in saved["errors"])

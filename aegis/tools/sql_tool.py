@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import pandas as pd
 
+from aegis.config import get_settings
 from aegis.tools.base import BaseTool
 
 if TYPE_CHECKING:
@@ -16,6 +18,7 @@ ALLOWED_SQLITE_ACTIONS = {
     sqlite3.SQLITE_SELECT,
     sqlite3.SQLITE_READ,
     sqlite3.SQLITE_FUNCTION,
+    getattr(sqlite3, "SQLITE_RECURSIVE", 33),
 }
 
 
@@ -45,8 +48,9 @@ class SQLQueryTool(BaseTool):
         "required": ["sql"],
     }
 
-    def __init__(self, context: Optional[TaskContext] = None):
+    def __init__(self, context: Optional[TaskContext] = None, timeout_seconds: Optional[float] = None):
         self.context = context
+        self.timeout_seconds = timeout_seconds
         if context is not None:
             self.conn = context.sqlite_conn
         else:
@@ -69,10 +73,27 @@ class SQLQueryTool(BaseTool):
         if not sql_cmd or not sql_cmd.strip():
             raise ValueError("No SQL query provided to execute.")
 
-        cursor = self.conn.cursor()
-        cursor.execute(sql_cmd)
-        columns = [desc[0] for desc in cursor.description] if cursor.description else []
-        rows = cursor.fetchmany(500)  # Capped at max 500 rows as required
+        settings = get_settings()
+        timeout = self.timeout_seconds if self.timeout_seconds is not None else settings.sandbox_timeout
+        deadline = time.monotonic() + timeout
+
+        def _progress_handler() -> int:
+            if time.monotonic() > deadline:
+                return 1
+            return 0
+
+        self.conn.set_progress_handler(_progress_handler, 1000)
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(sql_cmd)
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+            rows = cursor.fetchmany(500)  # Capped at max 500 rows as required
+        except sqlite3.OperationalError as e:
+            if time.monotonic() > deadline or "interrupted" in str(e).lower():
+                raise TimeoutError(f"SQL execution timed out after {timeout} seconds limit.") from e
+            raise
+        finally:
+            self.conn.set_progress_handler(None, 0)
 
         return {
             "columns": columns,

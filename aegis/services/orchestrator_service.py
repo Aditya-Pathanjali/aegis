@@ -101,8 +101,8 @@ class OrchestratorService:
             if submission.dataset_content:
                 try:
                     df = pd.read_csv(io.StringIO(submission.dataset_content))
-                except Exception:
-                    pass
+                except Exception as e:
+                    raise ValueError(f"Failed to parse dataset content as CSV: {e}") from e
 
             task_context = TaskContext(dataset=df, task_id=task_id)
             tool_reg = ToolRegistry.from_context(task_context)
