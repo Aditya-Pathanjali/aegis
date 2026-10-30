@@ -10,6 +10,12 @@ def route_next_subtask(state: AegisState) -> str:
     Decides whether there are remaining specialist subtasks to execute
     or if all subtasks are complete and ready for verification.
     """
+    pending = state.get("pending_retry_subtasks")
+    if pending is not None:
+        if len(pending) > 0:
+            return "specialist_node"
+        return "verification_node"
+
     plan = state.get("plan")
     if not plan or not plan.subtasks:
         return "verification_node"
@@ -23,8 +29,10 @@ def route_next_subtask(state: AegisState) -> str:
 def evaluate_quality_pass(state: AegisState) -> str:
     """
     Evaluates whether the critic approved the work or if a retry is warranted.
-    If critic failed and retry_count < max_retries, loop back to retry.
-    Otherwise proceed to synthesizer.
+    If critic failed and retry_count < max_retries:
+    - routes to 'planner_node' if replan is requested
+    - routes to 'retry_node' for targeted subtask retry
+    Otherwise proceeds to synthesizer.
     """
     critic = state.get("critic_evaluation")
     retry_count = state.get("retry_count", 0)
@@ -32,6 +40,8 @@ def evaluate_quality_pass(state: AegisState) -> str:
 
     if critic and not critic.quality_pass:
         if retry_count < max_retries:
+            if critic.replan:
+                return "planner_node"
             return "retry_node"
 
     return "synthesizer_node"

@@ -126,14 +126,25 @@ class AgentExecutionResult(BaseModel):
 
 class ClaimVerification(BaseModel):
     claim: str
-    is_supported: bool
+    status: Literal["supported", "contradicted", "unsupported", "no_evidence"] = "supported"
+    is_supported: bool = True
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     evidence_sources: List[str] = Field(default_factory=list)
+    quote_span: Optional[str] = None
+    numeric_mismatch: bool = False
     contradiction_detected: bool = False
     notes: str = ""
 
 
 class VerificationMetrics(BaseModel):
+    supported: int = 0
+    contradicted: int = 0
+    unsupported: int = 0
+    no_evidence: int = 0
+    supported_ratio: float = 0.0
+    citation_coverage: float = 0.0
+    numeric_mismatches: int = 0
+    quality_pass: bool = True
     evidence_coverage: float = 0.0
     source_quality: float = 0.0
     claim_consistency: float = 0.0
@@ -154,6 +165,10 @@ class VerificationResult(BaseModel):
 class CriticEvaluation(BaseModel):
     quality_pass: bool = True
     score: Optional[float] = Field(default=None, ge=0.0, le=10.0)
+    rubric_scores: Dict[str, float] = Field(default_factory=dict)
+    retry_subtask_ids: List[str] = Field(default_factory=list)
+    replan: bool = False
+    guidance: str = ""
     issues_found: List[str] = Field(default_factory=list)
     missing_evidence: List[str] = Field(default_factory=list)
     weak_reasoning: List[str] = Field(default_factory=list)
@@ -161,6 +176,18 @@ class CriticEvaluation(BaseModel):
     critique_summary: str = ""
     retry_recommendations: Optional[str] = None
     target_subtask_for_retry: Optional[str] = None
+
+
+class SynthesizerOutput(BaseModel):
+    title: str
+    final_finding: str
+    key_conclusions: List[str] = Field(default_factory=list)
+    actionable_recommendations: List[str] = Field(default_factory=list)
+    evidence_summary: str = ""
+    data_analysis_summary: str = ""
+    recommended_action: str = ""
+    urgency: str = "medium"
+    operational_steps: List[str] = Field(default_factory=list)
 
 
 class ExecutiveSummary(BaseModel):

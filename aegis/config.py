@@ -70,6 +70,10 @@ class Settings(BaseSettings):
         default=3,
         description="Maximum SDK retries for transient errors.",
     )
+    max_agent_retries: int = Field(
+        default=2,
+        description="Maximum agent retry loops on critic failure.",
+    )
     llm_timeout_s: float = Field(
         default=60.0,
         description="Timeout in seconds for LLM SDK requests.",

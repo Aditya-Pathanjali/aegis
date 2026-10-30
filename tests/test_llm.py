@@ -797,7 +797,14 @@ test-model:
 # ==============================================================================
 
 def test_planner_trace_event_tokens_equal_fake_llm_usage():
-    from aegis.models.schemas import AgentRole, ExecutionPlan, SpecialistOutput, SubTask
+    from aegis.agents.critic import CriticRubricOutput
+    from aegis.models.schemas import (
+        AgentRole,
+        ExecutionPlan,
+        SpecialistOutput,
+        SubTask,
+        SynthesizerOutput,
+    )
     from tests.fakes import fake_text
 
     plan = ExecutionPlan(
@@ -825,6 +832,8 @@ def test_planner_trace_event_tokens_equal_fake_llm_usage():
             ),
             fake_text("Done."),
             SpecialistOutput(summary="Doc review done.", findings=[], limitations=[]),
+            CriticRubricOutput(answers_question=8.0, uses_task_data=8.0, claims_verified=8.0, limitations_stated=8.0),
+            SynthesizerOutput(title="Pump Report", final_finding="Pump check done.", key_conclusions=[]),
         ]
     )
     orch = AegisOrchestrator(llm_provider=fake_llm)

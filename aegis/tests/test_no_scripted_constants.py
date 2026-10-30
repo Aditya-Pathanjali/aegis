@@ -110,11 +110,19 @@ def test_graph_outputs_strictly_derived_from_input_and_fake_llm():
             )
         ],
     )
-    from aegis.models.schemas import SpecialistOutput
+    from aegis.agents.critic import CriticRubricOutput
+    from aegis.models.schemas import SpecialistOutput, SynthesizerOutput
     from tests.fakes import fake_text
 
     spec_1 = SpecialistOutput(summary="Hydraulic pressure review completed.", findings=[], limitations=[])
-    fake_llm_1 = FakeLLM(responses=[plan_1, fake_text("Done."), spec_1])
+    critic_1 = CriticRubricOutput(answers_question=8.0, uses_task_data=8.0, claims_verified=8.0, limitations_stated=8.0)
+    synth_1 = SynthesizerOutput(
+        title="Hydraulic Report",
+        final_finding="Hydraulic pressure reviewed.",
+        key_conclusions=["All nominal."],
+        actionable_recommendations=[],
+    )
+    fake_llm_1 = FakeLLM(responses=[plan_1, fake_text("Done."), spec_1, critic_1, synth_1])
     orch_1 = AegisOrchestrator(llm_provider=fake_llm_1)
     state_1: AegisState = {
         "task_id": "t-1",
@@ -143,7 +151,14 @@ def test_graph_outputs_strictly_derived_from_input_and_fake_llm():
         ],
     )
     spec_2 = SpecialistOutput(summary="Solar inverter thermal analysis completed.", findings=[], limitations=[])
-    fake_llm_2 = FakeLLM(responses=[plan_2, fake_text("Done."), spec_2])
+    critic_2 = CriticRubricOutput(answers_question=8.0, uses_task_data=8.0, claims_verified=8.0, limitations_stated=8.0)
+    synth_2 = SynthesizerOutput(
+        title="Solar Report",
+        final_finding="Solar inverter thermal reviewed.",
+        key_conclusions=["All nominal."],
+        actionable_recommendations=[],
+    )
+    fake_llm_2 = FakeLLM(responses=[plan_2, fake_text("Done."), spec_2, critic_2, synth_2])
     orch_2 = AegisOrchestrator(llm_provider=fake_llm_2)
     state_2: AegisState = {
         "task_id": "t-2",
