@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from aegis.rag.chunker import DocumentChunker
-from aegis.rag.embeddings import BaseEmbeddings, FastDenseEmbeddings
+from aegis.rag.embeddings import BaseEmbeddings, SentenceTransformerEmbeddings
 from aegis.rag.vector_store import BaseVectorStore, VectorSearchResult, get_vector_store
 
 
@@ -31,7 +31,7 @@ class RAGKnowledgeBase:
         chunker: Optional[DocumentChunker] = None,
     ):
         self.vector_store = vector_store or get_vector_store()
-        self.embeddings = embeddings or FastDenseEmbeddings()
+        self.embeddings = embeddings or SentenceTransformerEmbeddings()
         self.chunker = chunker or DocumentChunker()
 
     def index_document(

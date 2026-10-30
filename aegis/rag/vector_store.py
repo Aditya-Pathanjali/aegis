@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,11 @@ class BaseVectorStore(ABC):
         pass
 
     @abstractmethod
+    def get_chunk(self, chunk_id: str) -> Optional[DocumentChunk]:
+        """Retrieves a single chunk by its ID."""
+        pass
+
+    @abstractmethod
     def search(self, query_embedding: List[float], top_k: int = 5, min_score: float = 0.0) -> List[VectorSearchResult]:
         pass
 
@@ -50,6 +56,7 @@ class InMemoryVectorStore(BaseVectorStore):
 
     def add_chunks(self, chunks: List[DocumentChunk], embeddings: List[List[float]]) -> None:
         for chunk, emb in zip(chunks, embeddings):
+            is_new = chunk.chunk_id not in self.chunks
             self.chunks[chunk.chunk_id] = chunk
             vec = np.array(emb, dtype=np.float32)
             norm = np.linalg.norm(vec)
@@ -65,7 +72,11 @@ class InMemoryVectorStore(BaseVectorStore):
                     "source": chunk.metadata.get("source", "manual_upload"),
                     "chunk_count": 0,
                 }
-            self.doc_registry[chunk.doc_id]["chunk_count"] += 1
+            if is_new:
+                self.doc_registry[chunk.doc_id]["chunk_count"] += 1
+
+    def get_chunk(self, chunk_id: str) -> Optional[DocumentChunk]:
+        return self.chunks.get(chunk_id)
 
     def search(self, query_embedding: List[float], top_k: int = 5, min_score: float = 0.0) -> List[VectorSearchResult]:
         if not self.vectors:
@@ -103,24 +114,26 @@ class InMemoryVectorStore(BaseVectorStore):
         return list(self.doc_registry.values())
 
     def clear(self) -> None:
-        self.chunks.clear( )
+        self.chunks.clear()
         self.vectors.clear()
         self.doc_registry.clear()
 
 
 class PostgresVectorStore(BaseVectorStore):
-    """PostgreSQL + pgvector implementation."""
+    """PostgreSQL + pgvector implementation using psycopg_pool and HNSW cosine index."""
 
-    def __init__(self, connection_url: Optional[str] = None):
-        self.connection_url = connection_url or os.getenv("DATABASE_URL", "postgresql://aegis:aegis_secret@localhost:5432/aegis_db")
-        self._fallback_store = InMemoryVectorStore()
-        self._connected = False
+    def __init__(self, connection_url: Optional[str] = None, timeout: float = 3.0):
+        from psycopg_pool import ConnectionPool
+
+        self.timeout = timeout
+        self.connection_url = connection_url or os.getenv(
+            "DATABASE_URL", "postgresql://aegis:aegis_secret@localhost:5432/aegis_db"
+        )
+        self.pool = ConnectionPool(self.connection_url, min_size=1, max_size=10, open=True)
         self._init_db()
 
-    def _init_db(self):
-        try:
-            import psycopg2
-            conn = psycopg2.connect(self.connection_url)
+    def _init_db(self) -> None:
+        with self.pool.connection(timeout=self.timeout) as conn:
             with conn.cursor() as cur:
                 cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
                 cur.execute("""
@@ -138,28 +151,19 @@ class PostgresVectorStore(BaseVectorStore):
                         doc_id TEXT REFERENCES aegis_documents(doc_id) ON DELETE CASCADE,
                         text TEXT,
                         metadata JSONB,
-                        embedding vector(128)
+                        embedding vector(384)
                     );
                 """)
-                conn.commit()
-            conn.close()
-            self._connected = True
-        except Exception:
-            # Fall back smoothly to memory store when PostgreSQL daemon is not active
-            self._connected = False
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS aegis_chunks_hnsw_idx
+                    ON aegis_document_chunks USING hnsw (embedding vector_cosine_ops);
+                """)
+            conn.commit()
 
     def add_chunks(self, chunks: List[DocumentChunk], embeddings: List[List[float]]) -> None:
-        if not self._connected:
-            self._fallback_store.add_chunks(chunks, embeddings)
-            return
-
-        try:
-            import psycopg2
-            from psycopg2.extras import Json
-            conn = psycopg2.connect(self.connection_url)
+        with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 for chunk, emb in zip(chunks, embeddings):
-                    # Ensure document record
                     cur.execute(
                         """
                         INSERT INTO aegis_documents (doc_id, title, source, chunk_count)
@@ -172,23 +176,32 @@ class PostgresVectorStore(BaseVectorStore):
                         """
                         INSERT INTO aegis_document_chunks (chunk_id, doc_id, text, metadata, embedding)
                         VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (chunk_id) DO UPDATE SET text = EXCLUDED.text, embedding = EXCLUDED.embedding;
+                        ON CONFLICT (chunk_id) DO UPDATE SET text = EXCLUDED.text, metadata = EXCLUDED.metadata, embedding = EXCLUDED.embedding;
                         """,
-                        (chunk.chunk_id, chunk.doc_id, chunk.text, Json(chunk.metadata), str(emb)),
+                        (chunk.chunk_id, chunk.doc_id, chunk.text, json.dumps(chunk.metadata), str(emb)),
                     )
-                conn.commit()
-            conn.close()
-        except Exception:
-            self._fallback_store.add_chunks(chunks, embeddings)
+            conn.commit()
+
+    def get_chunk(self, chunk_id: str) -> Optional[DocumentChunk]:
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT chunk_id, doc_id, text, metadata FROM aegis_document_chunks WHERE chunk_id = %s;",
+                    (chunk_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                meta = row[3] if isinstance(row[3], dict) else {}
+                return DocumentChunk(
+                    chunk_id=row[0],
+                    doc_id=row[1],
+                    text=row[2],
+                    metadata=meta,
+                )
 
     def search(self, query_embedding: List[float], top_k: int = 5, min_score: float = 0.0) -> List[VectorSearchResult]:
-        if not self._connected:
-            return self._fallback_store.search(query_embedding, top_k, min_score)
-
-        try:
-            import psycopg2
-            conn = psycopg2.connect(self.connection_url)
-            results = []
+        with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -200,33 +213,27 @@ class PostgresVectorStore(BaseVectorStore):
                     (str(query_embedding), str(query_embedding), top_k),
                 )
                 rows = cur.fetchall()
+                results: List[VectorSearchResult] = []
                 for row in rows:
                     score = float(row[4])
                     if score >= min_score:
+                        meta = row[3] if isinstance(row[3], dict) else {}
                         results.append(
                             VectorSearchResult(
                                 chunk_id=row[0],
                                 doc_id=row[1],
                                 text=row[2],
                                 score=round(score, 4),
-                                metadata=row[3] or {},
+                                metadata=meta,
                             )
                         )
-            conn.close()
-            return results
-        except Exception:
-            return self._fallback_store.search(query_embedding, top_k, min_score)
+                return results
 
     def list_documents(self) -> List[Dict[str, Any]]:
-        if not self._connected:
-            return self._fallback_store.list_documents()
-
-        try:
-            import psycopg2
-            conn = psycopg2.connect(self.connection_url)
-            docs = []
+        with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT doc_id, title, source, chunk_count FROM aegis_documents;")
+                docs = []
                 for row in cur.fetchall():
                     docs.append({
                         "doc_id": row[0],
@@ -234,34 +241,32 @@ class PostgresVectorStore(BaseVectorStore):
                         "source": row[2],
                         "chunk_count": row[3],
                     })
-            conn.close()
-            return docs
-        except Exception:
-            return self._fallback_store.list_documents()
+                return docs
 
     def clear(self) -> None:
-        if not self._connected:
-            self._fallback_store.clear()
-            return
-        try:
-            import psycopg2
-            conn = psycopg2.connect(self.connection_url)
+        with self.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("TRUNCATE aegis_document_chunks, aegis_documents CASCADE;")
-                conn.commit()
-            conn.close()
-        except Exception:
-            self._fallback_store.clear()
+            conn.commit()
+
+    def close(self) -> None:
+        if hasattr(self, "pool") and self.pool is not None:
+            self.pool.close()
 
 
 # Global Singleton Vector Store instance
 _global_vector_store: Optional[BaseVectorStore] = None
 
 
-def get_vector_store(prefer_postgres: bool = True) -> BaseVectorStore:
+def get_vector_store(prefer_postgres: Optional[bool] = None) -> BaseVectorStore:
     global _global_vector_store
     if _global_vector_store is None:
-        if prefer_postgres and os.getenv("USE_POSTGRES", "false").lower() == "true":
+        use_pg = (
+            prefer_postgres
+            if prefer_postgres is not None
+            else (os.getenv("USE_POSTGRES", "false").lower() == "true")
+        )
+        if use_pg:
             _global_vector_store = PostgresVectorStore()
         else:
             _global_vector_store = InMemoryVectorStore()
