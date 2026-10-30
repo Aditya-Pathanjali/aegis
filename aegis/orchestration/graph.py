@@ -14,7 +14,7 @@ from aegis.agents.planner import PlannerAgent
 from aegis.agents.research import ResearchAgent
 from aegis.agents.synthesizer import SynthesizerAgent
 from aegis.agents.verification import VerificationAgent
-from aegis.models.llm_provider import BaseLLMProvider, get_llm_provider
+from aegis.llm import LLMProvider, get_llm_provider
 from aegis.models.schemas import (
     AgentRole,
     HumanApprovalRequest,
@@ -39,7 +39,7 @@ class AegisOrchestrator:
 
     def __init__(
         self,
-        llm_provider: Optional[BaseLLMProvider] = None,
+        llm_provider: Optional[LLMProvider] = None,
         tool_registry: Optional[ToolRegistry] = None,
         trace_callback: Optional[Callable[[TraceEvent], None]] = None,
     ):
@@ -67,7 +67,10 @@ class AegisOrchestrator:
         details: Optional[Dict[str, Any]] = None,
         duration_ms: float = 0.0,
         token_usage: int = 0,
-        cost_usd: float = 0.0,
+        cost_usd: Optional[float] = 0.0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        model: Optional[str] = None,
     ) -> TraceEvent:
         event = TraceEvent(
             event_id=str(uuid.uuid4())[:8],
@@ -79,6 +82,9 @@ class AegisOrchestrator:
             duration_ms=round(duration_ms, 2),
             token_usage=token_usage,
             estimated_cost_usd=cost_usd,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            model=model,
         )
         if "trace_events" not in state or state["trace_events"] is None:
             state["trace_events"] = []
@@ -111,15 +117,26 @@ class AegisOrchestrator:
             critic_feedback=critic_feedback,
         )
 
-        duration = (time.perf_counter() - t0) * 1000.0
+        struct_res = getattr(self.planner_agent, "last_structured_result", None)
+        in_tokens = struct_res.usage.input_tokens if struct_res else 0
+        out_tokens = struct_res.usage.output_tokens if struct_res else 0
+        tokens_total = in_tokens + out_tokens
+        model_name = struct_res.model if struct_res else None
+        latency_ms = struct_res.latency_ms if struct_res else round((time.perf_counter() - t0) * 1000.0, 2)
+        cost_usd = struct_res.cost_usd if struct_res else None
+
         self._log_trace(
             state=state,
             agent_role=AgentRole.PLANNER,
             event_type="agent_finish",
             message=f"Planner generated structured plan with {len(plan.subtasks)} subtasks.",
             details={"subtasks": [st.title for st in plan.subtasks]},
-            duration_ms=duration,
-            token_usage=0,
+            duration_ms=latency_ms,
+            token_usage=tokens_total,
+            cost_usd=cost_usd,
+            input_tokens=in_tokens,
+            output_tokens=out_tokens,
+            model=model_name,
         )
 
         state["plan"] = plan

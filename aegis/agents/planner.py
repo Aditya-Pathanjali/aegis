@@ -6,6 +6,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 from aegis.agents.base import BaseAgent
+from aegis.llm.types import Message, StructuredResult, TextBlock
 from aegis.models.schemas import AgentRole, ExecutionPlan
 
 
@@ -17,6 +18,7 @@ class PlannerAgent(BaseAgent):
 
     def __init__(self, llm_provider=None, tool_registry=None):
         super().__init__(role=AgentRole.PLANNER, llm_provider=llm_provider, tool_registry=tool_registry)
+        self.last_structured_result: Optional[StructuredResult] = None
 
     def execute(
         self,
@@ -44,11 +46,14 @@ class PlannerAgent(BaseAgent):
             "Assign appropriate tools from: rag_retriever, python_sandbox, sql_query."
         )
 
-        plan = self.llm.generate_structured(
-            prompt=prompt,
+        msg = Message(role="user", content=[TextBlock(text=prompt)])
+        result = self.llm.structured(
+            messages=[msg],
             schema=ExecutionPlan,
-            system_prompt=system_prompt,
+            system=system_prompt,
         )
+        self.last_structured_result = result
+        plan: ExecutionPlan = result.value
 
         # Enforce valid IDs and consistent plan metadata
         plan.task_id = plan.task_id or str(uuid.uuid4())[:8]

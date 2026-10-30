@@ -1,0 +1,14 @@
+# Model pricing registry: USD per 1,000,000 tokens (1 MTok).
+# Filled by administrator/user from the providers' pricing pages.
+#
+# Units:
+#   input_per_mtok_usd: USD per 1M input tokens
+#   output_per_mtok_usd: USD per 1M output tokens
+#
+# Format:
+#   <model_id>:
+#     input_per_mtok_usd: float
+#     output_per_mtok_usd: float
+#     source_url: str
+#     checked_on: str (YYYY-MM-DD)
+{}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal, Optional
 
 from pydantic import Field, model_validator
@@ -60,6 +61,26 @@ class Settings(BaseSettings):
     embedding_dim: int = Field(
         default=384,
         description="Embedding vector dimensions.",
+    )
+    llm_max_output_tokens: int = Field(
+        default=4096,
+        description="Default maximum output tokens for LLM generation.",
+    )
+    llm_max_retries: int = Field(
+        default=3,
+        description="Maximum SDK retries for transient errors.",
+    )
+    llm_timeout_s: float = Field(
+        default=60.0,
+        description="Timeout in seconds for LLM SDK requests.",
+    )
+    pricing_file: str = Field(
+        default=str(Path(__file__).resolve().parent / "config" / "pricing.yaml"),
+        description="Path to YAML file mapping models to per-million token pricing.",
+    )
+    structured_mode: Literal["native", "tool"] = Field(
+        default="native",
+        description="Structured output strategy: 'native' (SDK parse) or 'tool' (forced tool call).",
     )
 
     @model_validator(mode="after")

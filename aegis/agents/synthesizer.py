@@ -75,7 +75,8 @@ class SynthesizerAgent(BaseAgent):
             else round(time.perf_counter() - start_time, 2)
         )
         total_tokens = sum(t.token_usage for t in trace_events)
-        total_cost = sum(t.estimated_cost_usd for t in trace_events)
+        costs = [t.estimated_cost_usd for t in trace_events if t.estimated_cost_usd is not None]
+        total_cost = round(sum(costs), 6) if costs else 0.0
 
         return FinalReport(
             task_id=task_id,

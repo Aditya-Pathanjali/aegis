@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -9,11 +10,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from aegis.api.routes import router as api_router
+from aegis.llm.pricing import load_pricing_registry
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Validate pricing configuration at startup
+    load_pricing_registry()
+    yield
+
 
 app = FastAPI(
     title="Aegis AI Orchestrator API",
     description="Multi-Agent AI Engineering & Research Orchestrator with Stateful LangGraph Workflows",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Enable CORS for local Vite or cross-origin dev

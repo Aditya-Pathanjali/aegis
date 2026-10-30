@@ -6,8 +6,9 @@ from pydantic import ValidationError
 
 from aegis.api.main import app
 from aegis.config import Settings, reset_settings
-from aegis.models.llm_provider import (
+from aegis.llm import (
     AnthropicProvider,
+    LLMNotConfiguredError,
     OpenAIProvider,
     get_llm_provider,
 )
@@ -58,19 +59,21 @@ def test_provider_classes_require_model_without_defaults():
         AnthropicProvider()  # type: ignore
 
 
-def test_get_llm_provider_from_settings():
+def test_get_llm_provider_from_settings(monkeypatch):
     # Unconfigured provider raises error
     s_none = Settings(provider=None)
-    with pytest.raises(RuntimeError, match="No LLM provider configured"):
+    with pytest.raises(LLMNotConfiguredError, match="No LLM provider configured"):
         get_llm_provider(settings=s_none)
 
     # Anthropic
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anth-key")
     s_anth = Settings(provider="anthropic", model="claude-custom")
     provider_anth = get_llm_provider(settings=s_anth)
     assert isinstance(provider_anth, AnthropicProvider)
     assert provider_anth.model == "claude-custom"
 
     # OpenAI
+    monkeypatch.setenv("OPENAI_API_KEY", "test-oai-key")
     s_oai = Settings(provider="openai", model="gpt-4o-custom")
     provider_oai = get_llm_provider(settings=s_oai)
     assert isinstance(provider_oai, OpenAIProvider)
