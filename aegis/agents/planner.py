@@ -43,7 +43,7 @@ class PlannerAgent(BaseAgent):
             "Decompose the user's complex request into a sequence of atomic, specialized subtasks. "
             "Available specialist roles: 'research', 'data_analyst'. "
             "Do NOT include verification or synthesizer in the subtasks as they are dedicated pipeline stages. "
-            "Assign appropriate tools from: rag_retriever, python_sandbox, sql_query."
+            "Assign appropriate tools from: rag_search, python_exec, sql_query, describe_dataset."
         )
 
         msg = Message(role="user", content=[TextBlock(text=prompt)])

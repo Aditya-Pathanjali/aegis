@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import List
 
 from pydantic import BaseModel, Field
@@ -24,7 +24,7 @@ class ParadigmMetric(BaseModel):
 
 class BenchmarkComparisonReport(BaseModel):
     benchmark_id: str
-    run_timestamp: datetime = Field(default_factory=datetime.utcnow)
+    run_timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     tasks_evaluated_count: int = 3
     results: List[ParadigmMetric]
     comparative_summary: str

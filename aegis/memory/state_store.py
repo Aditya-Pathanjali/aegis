@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Dict, List, Optional
 
 from aegis.models.schemas import TaskResponse, TaskStatus
@@ -18,7 +18,7 @@ class TaskStateStore:
         self._updated_timestamps: Dict[str, datetime] = {}
 
     def save_state(self, task_id: str, state: AegisState) -> None:
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         if task_id not in self._created_timestamps:
             self._created_timestamps[task_id] = now
         self._updated_timestamps[task_id] = now
@@ -43,8 +43,8 @@ class TaskStateStore:
             report=state.get("final_report"),
             approval_request=state.get("human_approval"),
             trace_events=state.get("trace_events", []),
-            created_at=self._created_timestamps.get(task_id, datetime.utcnow()),
-            updated_at=self._updated_timestamps.get(task_id, datetime.utcnow()),
+            created_at=self._created_timestamps.get(task_id, datetime.now(UTC)),
+            updated_at=self._updated_timestamps.get(task_id, datetime.now(UTC)),
         )
 
     def list_tasks(self) -> List[TaskResponse]:
