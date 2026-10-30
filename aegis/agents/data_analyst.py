@@ -31,7 +31,9 @@ class DataAnalystAgent(BaseAgent):
         if context and "upstream_context" in context and context["upstream_context"]:
             user_prompt += f"\nUpstream Results:\n{context['upstream_context']}\n"
         if context and "content" in context and context["content"]:
-            user_prompt += f"\nContext / Metadata:\n{context['content']}\n"
+            user_prompt += f"\nDataset:\n{context['content']}\n"
+        if context and context.get("critic_guidance"):
+            user_prompt += f"\nReviewer guidance for this retry:\n{context['critic_guidance']}\n"
 
         # Permissions: only tools in subtask.tools, restricted to allowed analyst tools
         allowed_tools = ["describe_dataset", "sql_query", "python_exec", "python_sandbox"]

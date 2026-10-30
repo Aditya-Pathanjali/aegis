@@ -39,6 +39,24 @@ from aegis.tools.registry import ToolRegistry, get_tool_registry
 logger = logging.getLogger(__name__)
 
 
+def _dataset_overview(dataset_content: Optional[str]) -> Optional[str]:
+    """Describes the uploaded dataset without pasting it into the prompt.
+
+    Agents read the data through describe_dataset, sql_query and python_exec. Pasting the
+    raw CSV cost ~120K input tokens per LLM call on the 5-engine C-MAPSS sample and let
+    agents "manually inspect" rows instead of running tools whose outputs can be cited.
+    """
+    if not dataset_content:
+        return None
+    lines = [line for line in dataset_content.splitlines() if line.strip()]
+    # Capped so a single-line JSON payload can't smuggle the whole dataset back in.
+    header = lines[0][:2000] if lines else ""
+    return (
+        f"A dataset is loaded as SQL table `dataset` ({max(len(lines) - 1, 0)} rows; "
+        f"columns: {header}). Its rows are not included in this prompt: use the tools to read them."
+    )
+
+
 class AegisOrchestrator:
     """
     Compiles and executes the LangGraph state machine governing Aegis agents.
@@ -235,7 +253,7 @@ class AegisOrchestrator:
 
         critic_guidance = state.get("critic_guidance", "") if is_retry else ""
         context = {
-            "content": state.get("dataset_content"),
+            "content": _dataset_overview(state.get("dataset_content")),
             "upstream_context": "\n\n".join(upstream_parts),
             "critic_guidance": critic_guidance,
         }

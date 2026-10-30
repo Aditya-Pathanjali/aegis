@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -186,8 +187,35 @@ def test_offline_workflow_cmapss():
 
         # Validate against the live workflow assertions function
         assert_live_workflow_result(result, df)
+        _assert_prompt_contract(fake_llm, csv_text, sql_call_id="call-sql-e1")
     finally:
         task_context.cleanup()
+
+
+def _prompt_text(call: dict) -> str:
+    return json.dumps([m.model_dump() for m in call["messages"]], default=str) + (call.get("system") or "")
+
+
+def _assert_prompt_contract(fake_llm: FakeLLM, csv_text: str, sql_call_id: str) -> None:
+    """What the real model is shown. A scripted FakeLLM cites the right IDs whatever the prompt
+    says, so these two live-run failures were invisible until checked here."""
+    # 1. The raw CSV never reaches a prompt (it cost ~120K input tokens per call live).
+    data_row = csv_text.splitlines()[1]
+    for call in fake_llm.calls:
+        text = _prompt_text(call)
+        assert data_row not in text, f"Raw dataset rows were sent in a {call['method']} prompt"
+        assert len(text) < 20_000, f"{call['method']} prompt is {len(text)} chars"
+
+    # 2. The model is shown the exact evidence ID it must cite: in the tool result and in the
+    #    final SpecialistOutput instruction. Live, it guessed "sql_query_1" and every claim was dropped.
+    analyst_final = [
+        c for c in fake_llm.calls
+        if c["method"] == "structured" and c["schema"] is SpecialistOutput and sql_call_id in _prompt_text(c)
+    ]
+    assert analyst_final, "The analyst's final structured call never showed the model its tool call ID"
+    text = _prompt_text(analyst_final[0])
+    assert f"[evidence_id: {sql_call_id}]" in text
+    assert f"tool_call {sql_call_id} (sql_query)" in text
 
 
 def test_offline_workflow_fails_when_report_omits_192():
