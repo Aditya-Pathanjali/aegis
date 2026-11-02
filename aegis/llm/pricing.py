@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import functools
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Iterable, Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 DEFAULT_PRICING_FILE = Path(__file__).resolve().parents[1] / "config" / "pricing.yaml"
 
@@ -15,8 +15,24 @@ DEFAULT_PRICING_FILE = Path(__file__).resolve().parents[1] / "config" / "pricing
 class ModelPricing(BaseModel):
     input_per_mtok_usd: float = Field(ge=0.0)
     output_per_mtok_usd: float = Field(ge=0.0)
+    # Optional per-request tier: a request whose prompt exceeds the threshold is billed
+    # entirely at the long-context rates (e.g. Claude Haiku 5.5 above 100,000 tokens).
+    long_context_threshold_tokens: Optional[int] = Field(default=None, gt=0)
+    long_context_input_per_mtok_usd: Optional[float] = Field(default=None, ge=0.0)
+    long_context_output_per_mtok_usd: Optional[float] = Field(default=None, ge=0.0)
     source_url: str
     checked_on: str
+
+    @model_validator(mode="after")
+    def _tier_all_or_none(self) -> "ModelPricing":
+        tier = (
+            self.long_context_threshold_tokens,
+            self.long_context_input_per_mtok_usd,
+            self.long_context_output_per_mtok_usd,
+        )
+        if any(v is not None for v in tier) and any(v is None for v in tier):
+            raise ValueError("long_context_* fields must be set together or not at all")
+        return self
 
 
 @functools.lru_cache(maxsize=32)
@@ -88,11 +104,32 @@ def calculate_cost(
     output_tokens: int,
     pricing_file: Optional[str] = None,
 ) -> Optional[float]:
-    """Calculate the estimated USD cost for token usage. Returns None if unpriced."""
+    """USD cost of ONE request. Returns None if unpriced.
+
+    Never pass tokens summed over several requests: tiers apply per request, so add up the
+    per-request costs with sum_costs() instead.
+    """
     registry = load_pricing_registry(pricing_file)
     pricing = registry.get(model)
     if pricing is None:
         return None
 
-    cost = (input_tokens * pricing.input_per_mtok_usd + output_tokens * pricing.output_per_mtok_usd) / 1_000_000.0
+    in_rate, out_rate = pricing.input_per_mtok_usd, pricing.output_per_mtok_usd
+    if (
+        pricing.long_context_threshold_tokens is not None
+        and pricing.long_context_input_per_mtok_usd is not None
+        and pricing.long_context_output_per_mtok_usd is not None
+        and input_tokens > pricing.long_context_threshold_tokens
+    ):
+        in_rate, out_rate = pricing.long_context_input_per_mtok_usd, pricing.long_context_output_per_mtok_usd
+
+    cost = (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000.0
     return round(cost, 6)
+
+
+def sum_costs(costs: Iterable[Optional[float]]) -> Optional[float]:
+    """Total of per-request costs; None if there were none or any request was unpriced."""
+    values = list(costs)
+    if not values or any(c is None for c in values):
+        return None
+    return round(sum(c for c in values if c is not None), 6)

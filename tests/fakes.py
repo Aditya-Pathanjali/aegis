@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Type, TypeVar
 
 from pydantic import BaseModel
 
+from aegis.llm.pricing import calculate_cost
 from aegis.llm.types import (
     LLMResponse,
     Message,
@@ -16,6 +17,16 @@ from aegis.llm.types import (
 )
 
 T = TypeVar("T", bound=BaseModel)
+R = TypeVar("R", LLMResponse, StructuredResult)
+
+
+def _priced(resp: R) -> R:
+    """Price a scripted response per request, as the real providers do (unless the script set a cost)."""
+    if resp.cost_usd is not None or not resp.model:
+        return resp
+    return resp.model_copy(
+        update={"cost_usd": calculate_cost(resp.model, resp.usage.input_tokens, resp.usage.output_tokens)}
+    )
 
 
 def fake_text(
@@ -126,9 +137,9 @@ class FakeLLM:
         if isinstance(resp, Exception):
             raise resp
         if isinstance(resp, LLMResponse):
-            return resp
+            return _priced(resp)
         if isinstance(resp, str):
-            return fake_text(resp, model=self.model)
+            return _priced(fake_text(resp, model=self.model))
         raise AssertionError(f"FakeLLM: queued item is {type(resp)}, expected LLMResponse or str")
 
     def structured(
@@ -152,11 +163,11 @@ class FakeLLM:
         if isinstance(resp, Exception):
             raise resp
         if isinstance(resp, StructuredResult):
-            return resp
+            return _priced(resp)
         if isinstance(resp, (schema, BaseModel)):
-            return fake_structured(resp, model=self.model)
+            return _priced(fake_structured(resp, model=self.model))
         if isinstance(resp, dict):
             val = schema.model_validate(resp) if hasattr(schema, "model_validate") else resp
-            return fake_structured(val, model=self.model)
+            return _priced(fake_structured(val, model=self.model))
 
         raise AssertionError(f"FakeLLM: queued item is {type(resp)}, expected StructuredResult or {schema}")

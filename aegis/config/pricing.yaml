@@ -9,6 +9,33 @@
 #   <model_id>:
 #     input_per_mtok_usd: float
 #     output_per_mtok_usd: float
+#     long_context_threshold_tokens: int    (optional; a request whose prompt exceeds this
+#     long_context_input_per_mtok_usd: float  is billed entirely at these rates; set all
+#     long_context_output_per_mtok_usd: float three or none)
 #     source_url: str
 #     checked_on: str (YYYY-MM-DD)
-{}
+#
+# Base rates only: prompt caching, batch, and US-only inference (1.1x) are not modelled.
+# Gemini is not listed yet: gemini-2.5-flash is deprecated from 2026-12-01, so the free
+# model is chosen (and priced) in Phase 2 Part 2.
+
+claude-haiku-5-5:
+  input_per_mtok_usd: 0.10
+  output_per_mtok_usd: 0.50
+  long_context_threshold_tokens: 100000
+  long_context_input_per_mtok_usd: 0.50
+  long_context_output_per_mtok_usd: 2.50
+  source_url: https://platform.claude.com/docs/en/about-claude/pricing
+  checked_on: "2026-11-02"
+
+claude-sonnet-5-5:
+  input_per_mtok_usd: 2.00
+  output_per_mtok_usd: 10.00
+  source_url: https://platform.claude.com/docs/en/about-claude/pricing
+  checked_on: "2026-11-02"
+
+claude-opus-5-5:
+  input_per_mtok_usd: 4.00
+  output_per_mtok_usd: 20.00
+  source_url: https://platform.claude.com/docs/en/about-claude/pricing
+  checked_on: "2026-11-02"

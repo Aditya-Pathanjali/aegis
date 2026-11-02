@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING, List, Optional, Set
 
 from aegis.config import get_settings
-from aegis.llm.pricing import calculate_cost
+from aegis.llm.pricing import sum_costs
 from aegis.llm.types import (
     Block,
     LLMResponse,
@@ -76,6 +76,7 @@ def run_tool_agent(
     all_tool_records: List[ToolCallRecord] = []
     produced_chunk_ids: Set[str] = set()
     produced_tool_ids: Set[str] = set()
+    call_costs: List[Optional[float]] = []
 
     t0 = time.perf_counter()
 
@@ -90,6 +91,7 @@ def run_tool_agent(
         total_calls += 1
         total_in_tokens += resp.usage.input_tokens
         total_out_tokens += resp.usage.output_tokens
+        call_costs.append(resp.cost_usd)
 
         messages.append(Message(role="assistant", content=resp.content))
 
@@ -219,6 +221,7 @@ def run_tool_agent(
     total_calls += 1
     total_in_tokens += struct_res.usage.input_tokens
     total_out_tokens += struct_res.usage.output_tokens
+    call_costs.append(struct_res.cost_usd)
 
     spec_output: SpecialistOutput = struct_res.value
     valid_limitations = list(spec_output.limitations)
@@ -241,7 +244,7 @@ def run_tool_agent(
         finding.evidence = valid_refs
 
     duration_sec = time.perf_counter() - t0
-    cost_usd = calculate_cost(struct_res.model, total_in_tokens, total_out_tokens) if struct_res.model else None
+    cost_usd = sum_costs(call_costs)
 
     return AgentExecutionResult(
         subtask_id=subtask_id,

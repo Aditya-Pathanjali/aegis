@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 from aegis.agents.base import BaseAgent
-from aegis.llm.pricing import calculate_cost
 from aegis.llm.types import Message, TextBlock
 from aegis.models.llm_outputs import CriticRubricOutput
 from aegis.models.schemas import (
@@ -105,7 +104,7 @@ class CriticAgent(BaseAgent):
         quality_pass = verification_pass and not has_retries and not has_low_scores
 
         target_subtask = rubric.retry_subtask_ids[0] if rubric.retry_subtask_ids else None
-        critic_cost = calculate_cost(resp.model, resp.usage.input_tokens, resp.usage.output_tokens) if resp.model else None
+        critic_cost = resp.cost_usd  # priced per request by the provider
         self.last_structured_result = resp
 
         return CriticEvaluation(

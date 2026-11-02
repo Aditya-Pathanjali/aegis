@@ -19,7 +19,6 @@ from aegis.agents.research import ResearchAgent
 from aegis.agents.synthesizer import SynthesizerAgent
 from aegis.agents.verification import VerificationAgent
 from aegis.llm import LLMProvider, get_llm_provider
-from aegis.llm.pricing import calculate_cost
 from aegis.models.schemas import (
     AgentRole,
     HumanApprovalRequest,
@@ -161,11 +160,7 @@ class AegisOrchestrator:
         tokens_total = in_tokens + out_tokens
         model_name = struct_res.model if struct_res else None
         latency_ms = struct_res.latency_ms if struct_res else round((time.perf_counter() - t0) * 1000.0, 2)
-        cost_usd = (
-            struct_res.cost_usd
-            if (struct_res and struct_res.cost_usd is not None)
-            else (calculate_cost(model_name, in_tokens, out_tokens) if model_name else None)
-        )
+        cost_usd = struct_res.cost_usd if struct_res else None
         call_count = 1 if struct_res else 0
 
         self._log_trace(
@@ -473,7 +468,7 @@ class AegisOrchestrator:
         s_out = s_res.usage.output_tokens if s_res else 0
         s_calls = 1 if s_res else 0
         s_model = s_res.model if s_res else None
-        s_cost = calculate_cost(s_model, s_in, s_out) if s_model else None
+        s_cost = s_res.cost_usd if s_res else None
 
         synth_event = self._log_trace(
             state=state,

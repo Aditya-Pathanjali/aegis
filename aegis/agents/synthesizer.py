@@ -6,7 +6,6 @@ import time
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 from aegis.agents.base import BaseAgent
-from aegis.llm.pricing import calculate_cost
 from aegis.llm.types import Message, TextBlock
 from aegis.models.llm_outputs import SynthesizerOutput
 from aegis.models.schemas import (
@@ -100,7 +99,7 @@ class SynthesizerAgent(BaseAgent):
         output_val = struct_res.value
         synth_in_tokens = struct_res.usage.input_tokens
         synth_out_tokens = struct_res.usage.output_tokens
-        synth_cost = calculate_cost(struct_res.model, synth_in_tokens, synth_out_tokens) if struct_res.model else None
+        synth_cost = struct_res.cost_usd  # priced per request by the provider
 
         if isinstance(output_val, FinalReport):
             # Direct FinalReport returned by test fake
