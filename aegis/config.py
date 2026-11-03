@@ -52,7 +52,28 @@ class Settings(BaseSettings):
     )
     sandbox_image: str = Field(
         default="aegis-sandbox:latest",
+        validation_alias=AliasChoices("AEGIS_SANDBOX_IMAGE", "SANDBOX_IMAGE"),
         description="Docker image for Python code execution sandbox.",
+    )
+    sandbox_timeout: float = Field(
+        default=20.0,
+        validation_alias=AliasChoices("AEGIS_SANDBOX_TIMEOUT", "SANDBOX_TIMEOUT"),
+        description="Execution timeout for python sandbox in seconds.",
+    )
+    sandbox_mem_limit: str = Field(
+        default="256m",
+        validation_alias=AliasChoices("AEGIS_SANDBOX_MEM_LIMIT", "SANDBOX_MEM_LIMIT"),
+        description="Memory limit for Python sandbox container.",
+    )
+    sandbox_cpus: float = Field(
+        default=1.0,
+        validation_alias=AliasChoices("AEGIS_SANDBOX_CPUS", "SANDBOX_CPUS"),
+        description="CPU limit for Python sandbox container.",
+    )
+    sandbox_pids_limit: int = Field(
+        default=64,
+        validation_alias=AliasChoices("AEGIS_SANDBOX_PIDS_LIMIT", "SANDBOX_PIDS_LIMIT"),
+        description="PID limit for Python sandbox container.",
     )
     agent_step_limit: int = Field(
         default=8,
@@ -61,10 +82,6 @@ class Settings(BaseSettings):
     tool_output_limit: int = Field(
         default=8000,
         description="Maximum characters for tool output before truncation.",
-    )
-    sandbox_timeout: float = Field(
-        default=20.0,
-        description="Execution timeout for python sandbox in seconds.",
     )
     dataset_max_bytes: int = Field(
         default=20 * 1024 * 1024,

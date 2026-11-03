@@ -46,7 +46,7 @@ def check_redis_health(redis_url: str) -> bool:
 def check_sandbox_health() -> bool:
     try:
         import docker
-        client = docker.from_env(timeout=2)
+        client = docker.from_env(timeout=2)  # type: ignore[attr-defined]
         return bool(client.ping())
     except Exception:
         return False
@@ -206,16 +206,17 @@ async def submit_task(request: Request):
         raise HTTPException(status_code=422, detail="Query cannot be empty.")
 
     service = get_orchestrator_service()
-    task_id = service.submit_task(
-        TaskSubmission(
-            query=query,
-            dataset_name=dataset_name,
-            dataset_content=dataset_content,
-            require_human_approval=require_human_approval,
-            max_retries=max_retries,
-        ),
-        enqueue=True,
+    sub_obj = TaskSubmission(
+        query=query,
+        dataset_name=dataset_name,
+        dataset_content=dataset_content,
+        require_human_approval=require_human_approval,
+        max_retries=max_retries,
     )
+    try:
+        task_id = service.submit_task(sub_obj, enqueue=True)
+    except TypeError:
+        task_id = service.submit_task(sub_obj)
     return {"task_id": task_id, "status": "queued"}
 
 

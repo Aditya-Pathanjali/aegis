@@ -56,21 +56,44 @@ Aegis divides engineering analysis across six specialized agents:
 
 ---
 
-## 3. Tool Sandboxing & Permission Matrix
+## 3. Tool Sandboxing & Container Isolation
 
-Aegis enforces role-based tool authorization and execution boundaries:
+Aegis enforces role-based tool authorization and strong OS-level execution boundaries:
 
 | Agent Role | Permitted Tools | Sandbox & Security Constraints |
 | :--- | :--- | :--- |
 | **Planner** | *None* | Pure structured schema generation (`ExecutionPlan`). |
 | **Research** | `rag_search` | Read-only vector store cosine similarity retrieval (HNSW indexed). |
-| **Data Analyst** | `describe_dataset`, `sql_query`, `python_exec` | Read-only single-statement SQL (`SELECT`/`WITH` only; `DROP`/`ALTER` rejected). AST validator blocks dangerous builtins (`eval`, `exec`, `open`, `compile`) and restricted modules (`os`, `sys`, `subprocess`, `shutil`, `socket`). 20-second timeout. |
+| **Data Analyst** | `describe_dataset`, `sql_query`, `python_exec` | Read-only single-statement SQL (`SELECT`/`WITH` only; `DROP`/`ALTER` rejected). Isolated disposable Docker container for Python execution with AST pre-filtering. |
 | **Verification** | *None (LLM Judge & Internal RAG)* | Evaluates claims against resolved source chunk text. |
 | **Critic** | *None* | Pure structured rubric evaluation. |
 | **Synthesizer** | *None* | Structured report compilation from verified findings only. |
 
-> [!WARNING]
-> The AST-based Python executor provides defense-in-depth against accidental operations; it is **not** an operating system security boundary. Do not run untrusted arbitrary code in shared environments.
+### Container Sandbox Architecture & Resource Limits
+
+Python execution runs in a disposable, locked-down Docker container created per execution. The container is the hard security boundary; the AST validator serves as a lightweight first-line pre-filter.
+
+- **Sandbox Image**: `aegis-sandbox:latest` (built from `docker/sandbox.Dockerfile` on `python:3.12-slim`).
+  - To build:
+    ```bash
+    docker build -f docker/sandbox.Dockerfile -t aegis-sandbox:latest .
+    ```
+- **Configuration**:
+  - Image tag: `AEGIS_SANDBOX_IMAGE` (default: `aegis-sandbox:latest`)
+  - Execution timeout: `AEGIS_SANDBOX_TIMEOUT` (default: `20.0` seconds)
+  - Memory limit: `AEGIS_SANDBOX_MEM_LIMIT` (default: `256m`)
+  - CPU limit: `AEGIS_SANDBOX_CPUS` (default: `1.0` CPU)
+  - PID limit: `AEGIS_SANDBOX_PIDS_LIMIT` (default: `64` processes)
+- **Isolation Boundaries**:
+  - **Zero Network**: `network_mode="none"` disables all egress, sockets, DNS, and HTTP traffic.
+  - **Read-Only Root Filesystem**: `read_only=True` prevents modifications to system binaries and configuration.
+  - **Non-Root Execution**: Runs under unprivileged user `1000:1000` (`aegis:aegis`).
+  - **Dropped Capabilities**: `cap_drop=["ALL"]` drops all Linux capabilities, preventing raw sockets and privilege escalation.
+  - **No New Privileges**: `security_opt=["no-new-privileges:true"]` prevents `setuid` escalation.
+  - **Scratch Space**: In-memory `tmpfs` mounts at `/workspace` and `/tmp` (`size=64m`, `noexec`, `nosuid`).
+  - **Dataset Mounting**: The task's `dataset.parquet` is mounted strictly read-only (`mode="ro"`).
+  - **Deterministic Cleanup**: Containers are forcefully killed on timeout and removed unconditionally in a `finally` block.
+  - **Fail-Closed Guarantee**: If the Docker daemon is unreachable or the image is missing, `python_exec` immediately raises an error. It **never** falls back to a host subprocess or in-process execution.
 
 ---
 

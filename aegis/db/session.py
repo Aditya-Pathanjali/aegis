@@ -27,11 +27,16 @@ def get_engine(url: Optional[str] = None) -> Engine:
     if not db_url:
         raise RuntimeError("DATABASE_URL is not configured. Aegis requires PostgreSQL persistence.")
 
+    connect_args = {}
+    if "postgres" in db_url:
+        connect_args["connect_timeout"] = 3
+
     engine = create_engine(
         db_url,
         pool_size=10,
         max_overflow=20,
         pool_pre_ping=True,
+        connect_args=connect_args,
     )
     if url is None:
         _engine = engine

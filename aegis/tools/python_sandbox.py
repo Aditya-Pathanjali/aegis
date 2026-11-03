@@ -1,21 +1,27 @@
-"""Sandboxed Python code execution tool with AST security validation and subprocess isolation."""
+"""Sandboxed Python code execution tool with AST security validation and Docker container isolation."""
 
 from __future__ import annotations
 
 import ast
+import base64
 import json
+import logging
 import os
-import subprocess
-import sys
-import tempfile
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+import requests
+from docker.errors import ImageNotFound  # type: ignore[import-not-found]
+
+import docker  # type: ignore[import-untyped]
 from aegis.config import get_settings
 from aegis.tools.base import BaseTool
 
 if TYPE_CHECKING:
     from aegis.tools.context import TaskContext
+
+logger = logging.getLogger(__name__)
 
 
 class SecurityViolationError(Exception):
@@ -25,14 +31,14 @@ class SecurityViolationError(Exception):
 
 class SafeCodeValidator(ast.NodeVisitor):
     """
-    AST validator to prevent dangerous operations.
-    Note: AST filtering is defense-in-depth and not an absolute security boundary.
+    AST validator to prevent dangerous operations as a first-line pre-filter.
+    Note: AST filtering is defense-in-depth; the Docker container is the true security boundary.
     """
 
     FORBIDDEN_MODULES = {
         "os", "subprocess", "sys", "shutil", "socket", "pty", "commands",
         "multiprocessing", "threading", "ctypes", "winreg", "posix", "importlib",
-        "builtins",
+        "builtins", "urllib", "requests", "http",
     }
 
     FORBIDDEN_CALLS = {
@@ -71,10 +77,11 @@ class SafeCodeValidator(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-_RUNNER_TEMPLATE = r"""
+_DOCKER_RUNNER_TEMPLATE = r"""
 import io
 import json
 import sys
+import base64
 from pathlib import Path
 
 # Isolated execution namespace
@@ -82,14 +89,19 @@ ns = {}
 try:
     import pandas as pd
     import numpy as np
+    import scipy
     ns["pd"] = pd
     ns["pandas"] = pd
     ns["np"] = np
     ns["numpy"] = np
+    ns["scipy"] = scipy
 except ImportError:
     pass
 
-parquet_path = Path("dataset.parquet")
+parquet_path = Path("/workspace/dataset.parquet")
+if not parquet_path.exists():
+    parquet_path = Path("dataset.parquet")
+
 if parquet_path.exists():
     try:
         import pandas as pd
@@ -105,15 +117,24 @@ if parquet_path.exists():
             "variables": {},
             "error": err_msg.strip(),
         }
-        Path("__results__.json").write_text(json.dumps(payload), encoding="utf-8")
+        sys.stdout.write(f"__AEGIS_RESULT_START__{json.dumps(payload)}__AEGIS_RESULT_END__\n")
+        sys.stdout.flush()
         sys.exit(1)
 
-code_file = Path("__script__.py")
-if not code_file.exists():
-    sys.stderr.write("User script file missing.\n")
+try:
+    user_code = base64.b64decode(sys.argv[1]).decode("utf-8")
+except Exception as e:
+    err_msg = f"Failed to decode user code: {e}\n"
+    sys.stderr.write(err_msg)
+    payload = {
+        "stdout": "",
+        "stderr": err_msg,
+        "variables": {},
+        "error": err_msg.strip(),
+    }
+    sys.stdout.write(f"__AEGIS_RESULT_START__{json.dumps(payload)}__AEGIS_RESULT_END__\n")
+    sys.stdout.flush()
     sys.exit(1)
-
-user_code = code_file.read_text(encoding="utf-8")
 
 stdout_buf = io.StringIO()
 stderr_buf = io.StringIO()
@@ -136,7 +157,7 @@ stderr_str = stderr_buf.getvalue()
 
 extracted_vars = {}
 for k, v in ns.items():
-    if k.startswith("_") or k in ("pd", "pandas", "np", "numpy", "df", "dataset"):
+    if k.startswith("_") or k in ("pd", "pandas", "np", "numpy", "scipy", "df", "dataset"):
         continue
     if isinstance(v, (int, float, str, bool, list, dict)):
         try:
@@ -152,26 +173,29 @@ payload = {
     "error": exec_err,
 }
 
-Path("__results__.json").write_text(json.dumps(payload), encoding="utf-8")
+sys.stdout.write(f"__AEGIS_RESULT_START__{json.dumps(payload)}__AEGIS_RESULT_END__\n")
+sys.stdout.flush()
 
 if exec_err:
     sys.stderr.write(exec_err + "\n")
+    sys.stderr.flush()
     sys.exit(1)
 """
 
 
 class PythonExecTool(BaseTool):
-    """Executes validated Python code in an isolated subprocess with access to task datasets."""
+    """Executes validated Python code in an isolated Docker container with access to task datasets."""
 
     name = "python_exec"
     description = (
-        "Executes Python code in an isolated subprocess (python -I) with access to dataset.parquet, pandas, and numpy. "
-        "Captures stdout, stderr, and extracted output variables."
+        "Executes Python code in a locked-down disposable Docker container with access to dataset.parquet, "
+        "pandas, numpy, and scipy. Zero network access, read-only rootfs, non-root user, dropped capabilities, "
+        "and strict resource limits. Captures stdout, stderr, and output variables."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "code": {"type": "string", "description": "Python code to execute inside the sandbox"},
+            "code": {"type": "string", "description": "Python code to execute inside the container sandbox"},
         },
         "required": ["code"],
     }
@@ -198,85 +222,178 @@ class PythonExecTool(BaseTool):
                 clean_env[k] = v
         return clean_env
 
-    def _run_subprocess(self, code: str, workdir: Path, timeout: float) -> Dict[str, Any]:
-        runner_file = workdir / "__runner__.py"
-        script_file = workdir / "__script__.py"
-        results_file = workdir / "__results__.json"
-
-        runner_file.write_text(_RUNNER_TEMPLATE, encoding="utf-8")
-        script_file.write_text(code, encoding="utf-8")
-
-        def _posix_limits():
-            if sys.platform != "win32":
-                import resource
-                resource.setrlimit(resource.RLIMIT_CPU, (int(timeout), int(timeout) + 1))
-                resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024 * 1024, 1024 * 1024 * 1024))
-
+    def _get_docker_client(self) -> Any:
+        """Connects to the Docker daemon and validates availability. Fail closed if unavailable."""
         try:
-            proc = subprocess.run(
-                [sys.executable, "-I", str(runner_file)],
-                cwd=str(workdir),
-                env=self._clean_environment(),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                preexec_fn=_posix_limits if sys.platform != "win32" else None,
-            )
-        except subprocess.TimeoutExpired as e:
-            raise TimeoutError(f"Execution timed out after {timeout} seconds limit.") from e
+            client = docker.from_env()  # type: ignore[attr-defined]
+            if not client.ping():
+                raise RuntimeError("Docker daemon responded with non-ping status.")
+            return client
+        except Exception as e:
+            raise RuntimeError(
+                f"Docker sandbox runtime unavailable: {e}. "
+                "Python code execution requires an active Docker daemon and cannot fall back to subprocess."
+            ) from e
+
+    def _run_container(
+        self,
+        code: str,
+        workdir: Optional[Path] = None,
+        timeout: Optional[float] = None,
+        bypass_ast: bool = False,
+    ) -> Dict[str, Any]:
+        """Runs the code in a new, locked-down Docker container with fail-closed security guarantees."""
+        if not bypass_ast:
+            self._validate_ast(code)
 
         settings = get_settings()
-        limit = settings.tool_output_limit
+        actual_timeout = timeout or self.timeout_seconds or settings.sandbox_timeout
+        client = self._get_docker_client()
 
-        stdout = ""
-        stderr = ""
-        variables: Dict[str, Any] = {}
-        err = None
+        # Check sandbox image exists
+        image_tag = settings.sandbox_image
+        try:
+            client.images.get(image_tag)
+        except ImageNotFound:
+            raise RuntimeError(
+                f"Docker sandbox image '{image_tag}' not found. "
+                f"Please build it using: docker build -f docker/sandbox.Dockerfile -t {image_tag} ."
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to inspect Docker sandbox image '{image_tag}': {e}") from e
 
-        if results_file.exists():
+        # Prepare dataset volume mount if available
+        volumes: Dict[str, Dict[str, str]] = {}
+        parquet_file: Optional[Path] = None
+        if self.context is not None and getattr(self.context, "parquet_path", None) is not None:
+            p_path = getattr(self.context, "parquet_path")
+            if p_path is not None:
+                candidate = Path(p_path).resolve()
+                if candidate.exists():
+                    parquet_file = candidate
+        elif self.context is not None and getattr(self.context, "workdir", None) is not None:
+            candidate = (Path(self.context.workdir) / "dataset.parquet").resolve()
+            if candidate.exists():
+                parquet_file = candidate
+        elif workdir is not None:
+            candidate = (Path(workdir) / "dataset.parquet").resolve()
+            if candidate.exists():
+                parquet_file = candidate
+
+        if parquet_file and parquet_file.exists():
+            volumes[str(parquet_file)] = {
+                "bind": "/workspace/dataset.parquet",
+                "mode": "ro",
+            }
+
+        b64_code = base64.b64encode(code.encode("utf-8")).decode("ascii")
+        container = None
+
+        try:
+            container = client.containers.create(
+                image=image_tag,
+                command=["python3", "-c", _DOCKER_RUNNER_TEMPLATE, b64_code],
+                network_mode="none",
+                read_only=True,
+                tmpfs={
+                    "/workspace": "rw,noexec,nosuid,size=64m,uid=1000,gid=1000,mode=1777",
+                    "/tmp": "rw,noexec,nosuid,size=64m,uid=1000,gid=1000,mode=1777",
+                },
+                user="1000:1000",
+                cap_drop=["ALL"],
+                security_opt=["no-new-privileges:true"],
+                mem_limit=settings.sandbox_mem_limit,
+                nano_cpus=int(settings.sandbox_cpus * 1_000_000_000),
+                pids_limit=settings.sandbox_pids_limit,
+                volumes=volumes,
+                environment={"PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"},
+            )
+
+            container.start()
+
             try:
-                data = json.loads(results_file.read_text(encoding="utf-8"))
-                stdout = data.get("stdout", "")
-                stderr = data.get("stderr", "")
-                variables = data.get("variables", {})
-                err = data.get("error")
-            except Exception:
-                stdout = proc.stdout
-                stderr = proc.stderr
-        else:
-            stdout = proc.stdout
-            stderr = proc.stderr
+                res = container.wait(timeout=int(actual_timeout))
+            except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError, TimeoutError) as e:
+                try:
+                    container.kill()
+                except Exception:
+                    pass
+                raise TimeoutError(f"Execution timed out after {actual_timeout} seconds limit.") from e
 
-        # Truncate output to limit if necessary
-        if len(stdout) > limit:
-            stdout = stdout[:limit] + f"\n... [output truncated at {limit} characters]"
-        if len(stderr) > limit:
-            stderr = stderr[:limit] + f"\n... [output truncated at {limit} characters]"
+            status_code = res.get("StatusCode", 0) if isinstance(res, dict) else getattr(res, "StatusCode", 0)
 
-        if proc.returncode != 0 or err:
-            error_msg = err or stderr or f"Process failed with exit code {proc.returncode}"
-            raise RuntimeError(error_msg.strip())
+            # Check for OOM kill
+            if status_code == 137:
+                raise RuntimeError("Process was killed (OOM / memory limit of 256MB exceeded).")
 
-        return {
-            "stdout": stdout.strip(),
-            "stderr": stderr.strip(),
-            "variables": variables,
-            "status": "success",
-        }
+            stdout_raw = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
+            stderr_raw = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
 
-    def _run(self, code: str, **kwargs: Any) -> Dict[str, Any]:
+            # Parse structured payload marker if emitted
+            match = re.search(r"__AEGIS_RESULT_START__(.*?)__AEGIS_RESULT_END__", stdout_raw, re.DOTALL)
+            if match:
+                payload_str = match.group(1).strip()
+                try:
+                    data = json.loads(payload_str)
+                    stdout = data.get("stdout", "")
+                    stderr = data.get("stderr", "")
+                    variables = data.get("variables", {})
+                    err = data.get("error")
+                except Exception:
+                    stdout = stdout_raw
+                    stderr = stderr_raw
+                    variables = {}
+                    err = None
+            else:
+                stdout = stdout_raw
+                stderr = stderr_raw
+                variables = {}
+                err = None
+
+            # Truncate output to limit if necessary
+            limit = settings.tool_output_limit
+            if len(stdout) > limit:
+                stdout = stdout[:limit] + f"\n... [output truncated at {limit} characters]"
+            if len(stderr) > limit:
+                stderr = stderr[:limit] + f"\n... [output truncated at {limit} characters]"
+
+            if status_code != 0 or err:
+                error_msg = err or stderr or f"Process failed with exit code {status_code}"
+                raise RuntimeError(error_msg.strip())
+
+            return {
+                "stdout": stdout.strip(),
+                "stderr": stderr.strip(),
+                "variables": variables,
+                "status": "success",
+            }
+
+        finally:
+            if container is not None:
+                try:
+                    container.remove(force=True)
+                except Exception:
+                    pass
+
+    def _run_subprocess(
+        self,
+        code: str,
+        workdir: Optional[Path] = None,
+        timeout: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """
+        Backwards-compatible interface routing directly to the container sandbox.
+        Zero subprocess fallback is performed.
+        """
+        return self._run_container(code, workdir=workdir, timeout=timeout, bypass_ast=True)
+
+    def _run(self, code: str = "", **kwargs: Any) -> Dict[str, Any]:
         # 1. AST Validation
         self._validate_ast(code)
 
         settings = get_settings()
         timeout = self.timeout_seconds or settings.sandbox_timeout
 
-        # 2. Subprocess execution
-        if self.context is not None:
-            return self._run_subprocess(code, self.context.workdir, timeout)
-
-        with tempfile.TemporaryDirectory(prefix="aegis_py_exec_") as tmpdir:
-            return self._run_subprocess(code, Path(tmpdir), timeout)
-
-
-
+        # 2. Container execution
+        return self._run_container(code, timeout=timeout)
