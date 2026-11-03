@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Union
 
 from aegis.agents.base import BaseAgent
 from aegis.config import get_settings
-from aegis.llm.pricing import calculate_cost
+from aegis.llm.pricing import sum_costs
 from aegis.llm.types import Message, TextBlock, Usage
 from aegis.models.llm_outputs import JudgeVerdict
 from aegis.models.schemas import (
@@ -164,6 +164,7 @@ class VerificationAgent(BaseAgent):
         total_judge_in_tokens = 0
         total_judge_out_tokens = 0
         total_judge_calls = 0
+        judge_call_costs: List[Optional[float]] = []
 
         for s_res in results_list:
             for finding in s_res.findings:
@@ -212,6 +213,7 @@ class VerificationAgent(BaseAgent):
                 total_judge_calls += 1
                 total_judge_in_tokens += judge_resp.usage.input_tokens
                 total_judge_out_tokens += judge_resp.usage.output_tokens
+                judge_call_costs.append(judge_resp.cost_usd)
                 judge_model_name = judge_resp.model
                 verdict: Literal["supported", "contradicted", "not_enough_info"] = judge_resp.value.verdict
                 quote_span = (judge_resp.value.quote_span or "").strip()
@@ -323,11 +325,7 @@ class VerificationAgent(BaseAgent):
             f"{contradicted_count} contradictions, {numeric_mismatches} numeric mismatches. Quality pass: {quality_pass}."
         )
 
-        judge_cost = (
-            calculate_cost(judge_model_name, total_judge_in_tokens, total_judge_out_tokens)
-            if (judge_model_name and total_judge_calls > 0)
-            else None
-        )
+        judge_cost = sum_costs(judge_call_costs)
 
         return VerificationResult(
             status=status_str,
