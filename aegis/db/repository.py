@@ -232,7 +232,7 @@ class PostgresTaskStore:
             ev_models = session.scalars(
                 select(TraceEventModel)
                 .where(TraceEventModel.task_id == task_id)
-                .order_by(TraceEventModel.timestamp)
+                .order_by(TraceEventModel.timestamp.asc(), TraceEventModel.id.asc())
             ).all()
 
             trace_events: List[TraceEvent] = []
@@ -302,7 +302,7 @@ class PostgresTaskStore:
             ev_models = session.scalars(
                 select(TraceEventModel)
                 .where(TraceEventModel.task_id == task_id)
-                .order_by(TraceEventModel.timestamp)
+                .order_by(TraceEventModel.timestamp.asc(), TraceEventModel.id.asc())
             ).all()
             return [
                 TraceEvent(

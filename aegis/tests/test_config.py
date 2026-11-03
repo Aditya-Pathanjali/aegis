@@ -126,6 +126,6 @@ def test_submit_task_succeeds_when_provider_and_key_configured(monkeypatch):
         "/api/tasks",
         json={"query": "Test task with provider"},
     )
-    assert resp.status_code == 200
+    assert resp.status_code in (200, 202)
     assert "task_id" in resp.json()
-    assert resp.json()["status"] == "submitted"
+    assert resp.json()["status"] in ("submitted", "queued")

@@ -40,12 +40,14 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AEGIS_REDIS_URL", "REDIS_URL"),
         description="Redis connection URL.",
     )
-    task_timeout_s: float = Field(
-        default=300.0,
+    task_timeout_s: int = Field(
+        default=600,
+        validation_alias=AliasChoices("AEGIS_TASK_TIMEOUT_S", "TASK_TIMEOUT_S"),
         description="Execution timeout for queued tasks in seconds.",
     )
     max_concurrent_tasks: int = Field(
-        default=5,
+        default=4,
+        validation_alias=AliasChoices("AEGIS_MAX_CONCURRENT_TASKS", "MAX_CONCURRENT_TASKS"),
         description="Global concurrency limit for active tasks.",
     )
     sandbox_image: str = Field(

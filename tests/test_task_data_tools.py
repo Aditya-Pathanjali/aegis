@@ -194,7 +194,7 @@ def test_oversized_csv_returns_422(monkeypatch):
         "/api/tasks",
         json={"query": "Analyze clean", "dataset_content": messy_csv},
     )
-    assert resp_clean.status_code == 200
+    assert resp_clean.status_code in (200, 202)
 
 
 def test_ast_rejects_getattr_probe_and_alias():

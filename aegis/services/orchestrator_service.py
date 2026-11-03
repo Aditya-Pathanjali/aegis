@@ -71,7 +71,7 @@ class OrchestratorService:
             except Exception:
                 pass
 
-    def submit_task(self, submission: TaskSubmission) -> str:
+    def submit_task(self, submission: TaskSubmission, enqueue: bool = False) -> str:
         task_id = f"task-{uuid.uuid4().hex[:8]}"
 
         # Initialize State
@@ -88,7 +88,7 @@ class OrchestratorService:
             "current_subtask_index": 0,
             "specialist_results": [],
             "trace_events": [],
-            "status": TaskStatus.PLANNING,
+            "status": TaskStatus.QUEUED if enqueue else TaskStatus.PLANNING,
             "errors": [],
         }
 
@@ -98,7 +98,16 @@ class OrchestratorService:
             logger.exception("Failed to save initial state for task %s: %s", task_id, exc)
             raise
 
-        # Launch execution in background thread
+        if enqueue:
+            from aegis.queue import enqueue_task_job, run_sync
+            try:
+                run_sync(enqueue_task_job(task_id, submission))
+            except Exception as exc:
+                logger.exception("Failed to enqueue task %s to Redis/arq: %s", task_id, exc)
+                raise RuntimeError(f"Queue service unavailable: {exc}") from exc
+            return task_id
+
+        # Launch execution in background thread for programmatic service callers
         thread = threading.Thread(
             target=self._run_workflow_worker,
             args=(task_id, initial_state, submission),
