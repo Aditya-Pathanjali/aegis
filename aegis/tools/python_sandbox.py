@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import requests
 from docker.errors import ImageNotFound  # type: ignore[import-not-found]
+from docker.types import Mount  # type: ignore[import-not-found]
 
 import docker  # type: ignore[import-untyped]
 from aegis.config import get_settings
@@ -22,6 +23,21 @@ if TYPE_CHECKING:
     from aegis.tools.context import TaskContext
 
 logger = logging.getLogger(__name__)
+
+# Where the task's dataset directory is mounted (read-only) inside every sandbox container.
+_SANDBOX_INPUT_DIR = "/input"
+
+
+def sandbox_runtime_ok() -> bool:
+    """True if the Docker daemon answers and the sandbox image is present."""
+    try:
+        client = docker.from_env(timeout=5)  # type: ignore[attr-defined]
+        client.ping()
+        client.images.get(get_settings().sandbox_image)
+        return True
+    except Exception as exc:
+        logger.warning("Sandbox runtime unavailable: %s", exc)
+        return False
 
 
 class SecurityViolationError(Exception):
@@ -98,11 +114,24 @@ try:
 except ImportError:
     pass
 
-parquet_path = Path("/workspace/dataset.parquet")
-if not parquet_path.exists():
-    parquet_path = Path("dataset.parquet")
+import os
+_expected = os.environ.get("AEGIS_DATASET_PATH")
+parquet_path = Path(_expected) if _expected else None
+if parquet_path is not None and not parquet_path.is_file():
+    # A task dataset was mounted but is not a readable file: never run on an empty frame.
+    err_msg = f"Task dataset not found in sandbox at {parquet_path}\n"
+    sys.stderr.write(err_msg)
+    payload = {"stdout": "", "stderr": err_msg, "variables": {}, "error": err_msg.strip()}
+    sys.stdout.write(f"__AEGIS_RESULT_START__{json.dumps(payload)}__AEGIS_RESULT_END__\n")
+    sys.stdout.flush()
+    sys.exit(1)
 
-if parquet_path.exists():
+if parquet_path is not None:
+    # Agent code reads 'dataset.parquet' from the cwd; the link target stays read-only.
+    try:
+        Path("/workspace/dataset.parquet").symlink_to(parquet_path)
+    except FileExistsError:
+        pass
     try:
         import pandas as pd
         _df = pd.read_parquet(parquet_path)
@@ -222,6 +251,37 @@ class PythonExecTool(BaseTool):
                 clean_env[k] = v
         return clean_env
 
+    @staticmethod
+    def _dataset_mounts(parquet_file: Path, settings: Any) -> list:
+        """Read-only mount of ONLY this task's directory at /input.
+
+        Bind-mount paths are resolved by the Docker daemon on the host. When the worker runs in a
+        container its temp paths don't exist there, and Docker silently mounts an empty directory,
+        so in that deployment each task dir lives on a named volume and we mount its subpath.
+        """
+        if not parquet_file.is_file():
+            raise RuntimeError(f"Task dataset missing at {parquet_file}; refusing to run without it.")
+        task_dir = parquet_file.parent
+        if settings.sandbox_task_volume:
+            base = Path(settings.task_data_dir).resolve()
+            try:
+                subpath = task_dir.relative_to(base)
+            except ValueError as e:
+                raise RuntimeError(
+                    f"Task dir {task_dir} is outside task_data_dir {base}; cannot mount it from "
+                    f"volume '{settings.sandbox_task_volume}'."
+                ) from e
+            return [
+                Mount(
+                    target=_SANDBOX_INPUT_DIR,
+                    source=settings.sandbox_task_volume,
+                    type="volume",
+                    read_only=True,
+                    subpath=subpath.as_posix(),
+                )
+            ]
+        return [Mount(target=_SANDBOX_INPUT_DIR, source=str(task_dir), type="bind", read_only=True)]
+
     def _get_docker_client(self) -> Any:
         """Connects to the Docker daemon and validates availability. Fail closed if unavailable."""
         try:
@@ -262,29 +322,15 @@ class PythonExecTool(BaseTool):
         except Exception as e:
             raise RuntimeError(f"Failed to inspect Docker sandbox image '{image_tag}': {e}") from e
 
-        # Prepare dataset volume mount if available
-        volumes: Dict[str, Dict[str, str]] = {}
         parquet_file: Optional[Path] = None
-        if self.context is not None and getattr(self.context, "parquet_path", None) is not None:
-            p_path = getattr(self.context, "parquet_path")
-            if p_path is not None:
-                candidate = Path(p_path).resolve()
-                if candidate.exists():
-                    parquet_file = candidate
-        elif self.context is not None and getattr(self.context, "workdir", None) is not None:
-            candidate = (Path(self.context.workdir) / "dataset.parquet").resolve()
-            if candidate.exists():
-                parquet_file = candidate
-        elif workdir is not None:
-            candidate = (Path(workdir) / "dataset.parquet").resolve()
-            if candidate.exists():
-                parquet_file = candidate
-
-        if parquet_file and parquet_file.exists():
-            volumes[str(parquet_file)] = {
-                "bind": "/workspace/dataset.parquet",
-                "mode": "ro",
-            }
+        if self.context is not None and self.context.parquet_path is not None:
+            parquet_file = Path(self.context.parquet_path).resolve()
+        elif workdir is not None and (Path(workdir) / "dataset.parquet").is_file():
+            parquet_file = (Path(workdir) / "dataset.parquet").resolve()
+        mounts = self._dataset_mounts(parquet_file, settings) if parquet_file is not None else []
+        env = {"PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+        if parquet_file is not None:
+            env["AEGIS_DATASET_PATH"] = f"{_SANDBOX_INPUT_DIR}/{parquet_file.name}"
 
         b64_code = base64.b64encode(code.encode("utf-8")).decode("ascii")
         container = None
@@ -305,8 +351,8 @@ class PythonExecTool(BaseTool):
                 mem_limit=settings.sandbox_mem_limit,
                 nano_cpus=int(settings.sandbox_cpus * 1_000_000_000),
                 pids_limit=settings.sandbox_pids_limit,
-                volumes=volumes,
-                environment={"PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"},
+                mounts=mounts,
+                environment=env,
             )
 
             container.start()
@@ -324,7 +370,9 @@ class PythonExecTool(BaseTool):
 
             # Check for OOM kill
             if status_code == 137:
-                raise RuntimeError("Process was killed (OOM / memory limit of 256MB exceeded).")
+                raise RuntimeError(
+                    f"Process was killed (OOM / memory limit of {settings.sandbox_mem_limit} exceeded)."
+                )
 
             stdout_raw = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
             stderr_raw = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")

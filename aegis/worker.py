@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import threading
 import uuid
 from typing import Any, Dict, Optional
 
@@ -37,6 +38,57 @@ logger = logging.getLogger(__name__)
 class TaskCancelledException(Exception):
     """Raised when a task is aborted due to user cancellation."""
     pass
+
+
+class TaskTimedOutException(Exception):
+    """Raised inside the task thread once its wall-clock timeout has passed."""
+    pass
+
+
+class _StopGuardLLM:
+    """Wraps a task's LLM so a cancel or timeout stops the very next LLM call.
+
+    The graph runs in a worker thread, and asyncio.wait_for cannot kill a thread: without this
+    guard a timed-out or cancelled task kept calling (and paying for) the LLM until it finished.
+    """
+
+    def __init__(self, inner: LLMProvider, task_id: str, timed_out: threading.Event):
+        self._inner = inner
+        self._task_id = task_id
+        self._timed_out = timed_out
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def _check(self) -> None:
+        if self._timed_out.is_set():
+            raise TaskTimedOutException(f"Task {self._task_id} exceeded its timeout.")
+        if is_task_cancelled(self._task_id):
+            raise TaskCancelledException(f"Task {self._task_id} was cancelled.")
+
+    def chat(self, *args: Any, **kwargs: Any) -> Any:
+        self._check()
+        return self._inner.chat(*args, **kwargs)
+
+    def structured(self, *args: Any, **kwargs: Any) -> Any:
+        self._check()
+        return self._inner.structured(*args, **kwargs)
+
+
+def _make_on_node(store: Any, task_id: str, timed_out: threading.Event) -> Any:
+    """Per-node callback: persist progress unless the task was cancelled or timed out."""
+
+    def on_node(current_state: AegisState) -> None:
+        if timed_out.is_set():
+            # The job already recorded FAILED; never overwrite it from the lingering thread.
+            raise TaskTimedOutException(f"Task {task_id} exceeded its timeout.")
+        if is_task_cancelled(task_id):
+            current_state["status"] = TaskStatus.CANCELLED
+            store.save_state(task_id, current_state)
+            raise TaskCancelledException(f"Task {task_id} was cancelled.")
+        store.save_state(task_id, current_state)
+
+    return on_node
 
 
 def _publish_event_both(event: TraceEvent) -> None:
@@ -104,27 +156,26 @@ async def run_task_job(
         tool_reg = ToolRegistry.from_context(task_context)
 
         # Allow test injection of custom LLM (e.g. FakeLLM) via ctx
-        llm: Optional[LLMProvider] = ctx.get("llm") or get_llm_provider()
+        llm: LLMProvider = ctx.get("llm") or get_llm_provider()
+        timed_out = threading.Event()
 
         orchestrator = AegisOrchestrator(
-            llm_provider=llm,
+            llm_provider=_StopGuardLLM(llm, task_id, timed_out),  # type: ignore[arg-type]
             tool_registry=tool_reg,
             trace_callback=_publish_event_both,
             task_context=task_context,
         )
-
-        def on_node(current_state: AegisState) -> None:
-            if is_task_cancelled(task_id):
-                current_state["status"] = TaskStatus.CANCELLED
-                store.save_state(task_id, current_state)
-                raise TaskCancelledException(f"Task {task_id} was cancelled.")
-            store.save_state(task_id, current_state)
+        on_node = _make_on_node(store, task_id, timed_out)
 
         # Execute orchestrator run inside a thread to keep the asyncio event loop responsive
-        final_state = await asyncio.wait_for(
-            asyncio.to_thread(orchestrator.run, initial_state, on_node),
-            timeout=float(timeout_s),
-        )
+        try:
+            final_state = await asyncio.wait_for(
+                asyncio.to_thread(orchestrator.run, initial_state, on_node),
+                timeout=float(timeout_s),
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            timed_out.set()  # the thread stops at its next LLM call or node boundary
+            raise
 
         # Check if paused at human gate
         if final_state.get("status") == TaskStatus.WAITING_APPROVAL:
@@ -215,46 +266,51 @@ async def resume_task_job(
         req = HumanApprovalRequest(task_id=task_id)
 
     task_context: Optional[TaskContext] = None
+    timed_out = threading.Event()
     try:
         df = None
         if state.get("dataset_content"):
             try:
                 df = pd.read_csv(io.StringIO(state["dataset_content"]))
-            except Exception:
-                pass
+            except Exception as e:
+                # Fail closed: never resume an analysis without the task's data.
+                raise ValueError(f"Failed to parse stored dataset content as CSV: {e}") from e
         task_context = TaskContext(dataset=df, task_id=task_id)
         tool_reg = ToolRegistry.from_context(task_context)
 
-        llm: Optional[LLMProvider] = ctx.get("llm") or get_llm_provider()
+        llm: LLMProvider = ctx.get("llm") or get_llm_provider()
         orchestrator = AegisOrchestrator(
-            llm_provider=llm,
+            llm_provider=_StopGuardLLM(llm, task_id, timed_out),  # type: ignore[arg-type]
             tool_registry=tool_reg,
             task_context=task_context,
             trace_callback=_publish_event_both,
         )
-
-        def on_node(current_state: AegisState) -> None:
-            if is_task_cancelled(task_id):
-                current_state["status"] = TaskStatus.CANCELLED
-                store.save_state(task_id, current_state)
-                raise TaskCancelledException(f"Task {task_id} was cancelled.")
-            store.save_state(task_id, current_state)
+        on_node = _make_on_node(store, task_id, timed_out)
 
         cfg = get_settings()
         timeout_s = int(ctx.get("job_timeout") or cfg.task_timeout_s)
-        final_state = await asyncio.wait_for(
-            asyncio.to_thread(
-                orchestrator.resume,
-                task_id,
-                {"action": action, "feedback": feedback},
-                on_node,
-            ),
-            timeout=float(timeout_s),
-        )
+        try:
+            final_state = await asyncio.wait_for(
+                asyncio.to_thread(
+                    orchestrator.resume,
+                    task_id,
+                    {"action": action, "feedback": feedback},
+                    on_node,
+                ),
+                timeout=float(timeout_s),
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            timed_out.set()
+            raise
 
         store.save_state(task_id, final_state)
         return {"status": str(final_state.get("status")), "task_id": task_id}
 
+    except TaskCancelledException:
+        st = store.get_state(task_id) or state
+        st["status"] = TaskStatus.CANCELLED
+        store.save_state(task_id, st)
+        return {"status": "cancelled", "task_id": task_id}
     except Exception as exc:
         logger.exception("Resume failed for task %s: %s", task_id, exc)
         st = store.get_state(task_id) or state
@@ -270,11 +326,29 @@ async def resume_task_job(
                 pass
 
 
+async def _sandbox_heartbeat_loop() -> None:
+    """Reports sandbox runtime health to Redis for the API's /health (the API has no Docker access)."""
+    from aegis.queue import SANDBOX_HEARTBEAT_TTL_S, write_sandbox_heartbeat
+    from aegis.tools.python_sandbox import sandbox_runtime_ok
+
+    while True:
+        ok = await asyncio.to_thread(sandbox_runtime_ok)
+        try:
+            write_sandbox_heartbeat(ok)
+        except Exception as exc:
+            logger.warning("Could not write sandbox heartbeat: %s", exc)
+        await asyncio.sleep(SANDBOX_HEARTBEAT_TTL_S / 3)
+
+
 async def startup(ctx: Dict[str, Any]) -> None:
+    ctx["sandbox_heartbeat"] = asyncio.create_task(_sandbox_heartbeat_loop())
     logger.info("Aegis worker process started up successfully.")
 
 
 async def shutdown(ctx: Dict[str, Any]) -> None:
+    task = ctx.get("sandbox_heartbeat")
+    if task is not None:
+        task.cancel()
     logger.info("Aegis worker process shutting down.")
 
 

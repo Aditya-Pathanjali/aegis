@@ -74,10 +74,15 @@ Aegis enforces role-based tool authorization and strong OS-level execution bound
 Python execution runs in a disposable, locked-down Docker container created per execution. The container is the hard security boundary; the AST validator serves as a lightweight first-line pre-filter.
 
 - **Sandbox Image**: `aegis-sandbox:latest` (built from `docker/sandbox.Dockerfile` on `python:3.12-slim`).
-  - To build:
+  - `docker compose up` builds it (the `sandbox-image` service). Outside compose:
     ```bash
     docker build -f docker/sandbox.Dockerfile -t aegis-sandbox:latest .
     ```
+- **Who can start containers**: only the **worker** mounts the Docker socket, because it starts the
+  sandbox containers. That access is equivalent to root on the Docker host, which is a known limit of
+  this design (a rootless Docker or a socket proxy restricted to container create/start/remove would
+  narrow it). The **API has no Docker access**: `/health` reports sandbox status from a heartbeat the
+  worker writes to Redis every 10 s (expires after 30 s).
 - **Configuration**:
   - Image tag: `AEGIS_SANDBOX_IMAGE` (default: `aegis-sandbox:latest`)
   - Execution timeout: `AEGIS_SANDBOX_TIMEOUT` (default: `20.0` seconds)
@@ -91,7 +96,12 @@ Python execution runs in a disposable, locked-down Docker container created per 
   - **Dropped Capabilities**: `cap_drop=["ALL"]` drops all Linux capabilities, preventing raw sockets and privilege escalation.
   - **No New Privileges**: `security_opt=["no-new-privileges:true"]` prevents `setuid` escalation.
   - **Scratch Space**: In-memory `tmpfs` mounts at `/workspace` and `/tmp` (`size=64m`, `noexec`, `nosuid`).
-  - **Dataset Mounting**: The task's `dataset.parquet` is mounted strictly read-only (`mode="ro"`).
+  - **Dataset Mounting**: Only the task's own directory is mounted, read-only, at `/input` (linked as
+    `/workspace/dataset.parquet`). In compose the worker runs in a container, so task directories live
+    on the `aegis_taskdata` volume and each sandbox mounts just its task's **subpath** of that volume
+    (`AEGIS_TASK_DATA_DIR` + `AEGIS_SANDBOX_TASK_VOLUME`). A host bind mount would not work there:
+    Docker resolves bind paths on the host, where the worker's paths don't exist. If the dataset is
+    missing in the sandbox, the call fails rather than running on an empty table.
   - **Deterministic Cleanup**: Containers are forcefully killed on timeout and removed unconditionally in a `finally` block.
   - **Fail-Closed Guarantee**: If the Docker daemon is unreachable or the image is missing, `python_exec` immediately raises an error. It **never** falls back to a host subprocess or in-process execution.
 

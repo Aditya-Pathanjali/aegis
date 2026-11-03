@@ -16,6 +16,8 @@ class Settings(BaseSettings):
         env_prefix="AEGIS_",
         env_file=".env",
         extra="ignore",
+        # docker compose passes `${VAR:-}` as an empty string when unset; treat that as unset.
+        env_ignore_empty=True,
     )
 
     provider: Optional[Literal["anthropic", "openai"]] = Field(
@@ -54,6 +56,23 @@ class Settings(BaseSettings):
         default="aegis-sandbox:latest",
         validation_alias=AliasChoices("AEGIS_SANDBOX_IMAGE", "SANDBOX_IMAGE"),
         description="Docker image for Python code execution sandbox.",
+    )
+    task_data_dir: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("AEGIS_TASK_DATA_DIR", "TASK_DATA_DIR"),
+        description=(
+            "Directory where per-task working dirs are created. In compose this is the worker's "
+            "mount point of the shared task-data volume; unset, the system temp dir is used."
+        ),
+    )
+    sandbox_task_volume: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("AEGIS_SANDBOX_TASK_VOLUME", "SANDBOX_TASK_VOLUME"),
+        description=(
+            "Named Docker volume mounted at task_data_dir. When set, each sandbox mounts only its "
+            "task's subpath of this volume. Required when the worker itself runs in a container, "
+            "because bind-mount paths are resolved on the Docker host, not inside the worker."
+        ),
     )
     sandbox_timeout: float = Field(
         default=20.0,
@@ -133,6 +152,8 @@ class Settings(BaseSettings):
         """Enforce that model is explicitly configured whenever provider is set."""
         if self.provider is not None and not self.model:
             raise ValueError("model is required when provider is configured")
+        if (self.sandbox_task_volume is None) != (self.task_data_dir is None):
+            raise ValueError("sandbox_task_volume and task_data_dir must be set together")
         return self
 
 

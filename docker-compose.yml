@@ -4,11 +4,12 @@ services:
     container_name: aegis_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     ports:
-      - "5432:5432"
+      # Loopback only: never expose the database on the LAN.
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +23,8 @@ services:
     container_name: aegis_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      # Loopback only: Redis has no password here.
+      - "127.0.0.1:6379:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -30,6 +32,17 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # Builds the image the worker starts for every python_exec call. It exits immediately;
+  # `docker compose up` (or `docker compose build`) keeps aegis-sandbox:latest current.
+  sandbox-image:
+    build:
+      context: .
+      dockerfile: docker/sandbox.Dockerfile
+    image: ${AEGIS_SANDBOX_IMAGE:-aegis-sandbox:latest}
+    command: ["python3", "-c", "print('sandbox image built')"]
+    restart: "no"
+    network_mode: none
 
   api:
     build:
@@ -44,19 +57,18 @@ services:
         condition: service_healthy
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - REDIS_URL=redis://redis:6379/0
       - PORT=8000
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - AEGIS_PROVIDER=${AEGIS_PROVIDER:-}
       - AEGIS_MODEL=${AEGIS_MODEL:-}
       - AEGIS_JUDGE_MODEL=${AEGIS_JUDGE_MODEL:-}
-      - AEGIS_TASK_TIMEOUT_S=${AEGIS_TASK_TIMEOUT_S:-300.0}
+      - AEGIS_TASK_TIMEOUT_S=${AEGIS_TASK_TIMEOUT_S:-300}
       - AEGIS_MAX_CONCURRENT_TASKS=${AEGIS_MAX_CONCURRENT_TASKS:-5}
     ports:
-      - "8000:8000"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - "127.0.0.1:8000:8000"
+    # No Docker socket: the API never runs code. Sandbox health comes from the worker's heartbeat.
 
   worker:
     build:
@@ -70,19 +82,30 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      sandbox-image:
+        condition: service_completed_successfully
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - REDIS_URL=redis://redis:6379/0
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - AEGIS_PROVIDER=${AEGIS_PROVIDER:-}
       - AEGIS_MODEL=${AEGIS_MODEL:-}
       - AEGIS_JUDGE_MODEL=${AEGIS_JUDGE_MODEL:-}
-      - AEGIS_TASK_TIMEOUT_S=${AEGIS_TASK_TIMEOUT_S:-300.0}
+      - AEGIS_TASK_TIMEOUT_S=${AEGIS_TASK_TIMEOUT_S:-300}
       - AEGIS_MAX_CONCURRENT_TASKS=${AEGIS_MAX_CONCURRENT_TASKS:-5}
+      - AEGIS_SANDBOX_IMAGE=${AEGIS_SANDBOX_IMAGE:-aegis-sandbox:latest}
+      # Task datasets live on a named volume so each sandbox can mount its own task's subpath
+      # (bind-mounting the worker's /tmp would mount an empty dir from the Docker host).
+      - AEGIS_TASK_DATA_DIR=/var/lib/aegis/tasks
+      - AEGIS_SANDBOX_TASK_VOLUME=aegis_taskdata
     volumes:
+      # The worker starts sandbox containers, so it needs the Docker API. Only the worker gets it.
       - /var/run/docker.sock:/var/run/docker.sock
+      - taskdata:/var/lib/aegis/tasks
 
 volumes:
   pgdata:
   redisdata:
+  taskdata:
+    name: aegis_taskdata

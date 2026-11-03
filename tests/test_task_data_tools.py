@@ -140,11 +140,8 @@ def test_drop_and_multi_statement_sql_rejected():
 
 
 def test_oversized_csv_returns_422(monkeypatch):
-    from tests.fakes import FakeLLM
-
     reset_settings(Settings(provider="anthropic", model="claude-sonnet-5-5", dataset_max_bytes=100))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setattr("aegis.services.orchestrator_service.get_llm_provider", lambda: FakeLLM(model="test"))
 
     client = TestClient(app)
 
@@ -249,7 +246,7 @@ def test_orchestrator_worker_fails_on_unparseable_csv(postgres_container):
     from aegis.services.orchestrator_service import OrchestratorService
     from tests.fakes import FakeLLM
 
-    svc = OrchestratorService(llm_provider=FakeLLM(model="test"))
+    svc = OrchestratorService()
     # Give an invalid CSV with inconsistent column counts that causes pandas ParserError
     bad_submission = TaskSubmission(
         query="Test unparseable csv",
@@ -272,7 +269,11 @@ def test_orchestrator_worker_fails_on_unparseable_csv(postgres_container):
         "phase": "init",
     }
     svc.state_store.save_state(task_id, initial_state)
-    svc._run_workflow_worker(task_id, initial_state, bad_submission)
+    import asyncio
+
+    from aegis.worker import run_task_job
+
+    asyncio.run(run_task_job({"llm": FakeLLM(model="test")}, task_id, bad_submission.model_dump(mode="json")))
     saved = svc.state_store.get_state(task_id)
     assert saved["status"] == "failed"
     assert any("Failed to parse dataset" in err or "ParserError" in err for err in saved["errors"])

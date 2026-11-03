@@ -132,21 +132,28 @@ def uuid_short() -> str:
 
 
 def set_task_cancelled(task_id: str) -> None:
-    """Sets cancellation flag in Redis."""
-    try:
-        client = get_sync_redis()
-        client.set(f"aegis:task:{task_id}:cancel", "1", ex=3600)
-    except Exception as exc:
-        logger.debug("Failed to set cancel key in Redis: %s", exc)
+    """Sets the cancellation flag in Redis. Raises if Redis is unreachable (fail closed)."""
+    get_sync_redis().set(f"aegis:task:{task_id}:cancel", "1", ex=3600)
 
 
 def is_task_cancelled(task_id: str) -> bool:
-    """Checks whether task cancellation flag is active in Redis."""
-    try:
-        client = get_sync_redis()
-        return bool(client.exists(f"aegis:task:{task_id}:cancel"))
-    except Exception:
-        return False
+    """Checks the cancellation flag. Raises if Redis is unreachable, which fails the task
+    rather than letting it keep spending with no way to stop it."""
+    return bool(get_sync_redis().exists(f"aegis:task:{task_id}:cancel"))
+
+
+# The worker owns Docker access; the API learns sandbox health from this heartbeat instead of
+# mounting the Docker socket. A missing (expired) key means no healthy worker has reported.
+SANDBOX_HEARTBEAT_KEY = "aegis:worker:sandbox_ok"
+SANDBOX_HEARTBEAT_TTL_S = 30
+
+
+def write_sandbox_heartbeat(ok: bool) -> None:
+    get_sync_redis().set(SANDBOX_HEARTBEAT_KEY, "1" if ok else "0", ex=SANDBOX_HEARTBEAT_TTL_S)
+
+
+def read_sandbox_heartbeat() -> bool:
+    return get_sync_redis().get(SANDBOX_HEARTBEAT_KEY) == "1"
 
 
 async def reset_queue_connections() -> None:

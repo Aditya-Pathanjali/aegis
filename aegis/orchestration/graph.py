@@ -747,24 +747,9 @@ class AegisOrchestrator:
         config = {"configurable": {"thread_id": task_id}}
         state_snapshot = self.graph.get_state(config)
         if not state_snapshot.values:
-            from aegis.db import get_task_store
-            store_state = dict(get_task_store().get_state(task_id) or {})
-            action = decision.get("action", "approve") if isinstance(decision, dict) else str(decision)
-            feedback = decision.get("feedback") if isinstance(decision, dict) else None
-            appr = store_state.get("human_approval") or HumanApprovalRequest(task_id=task_id)
-            if action == "approve":
-                store_state["status"] = TaskStatus.COMPLETED
-                appr.status = "approved"
-            elif action == "reject":
-                store_state["status"] = TaskStatus.REJECTED
-                appr.status = "rejected"
-            elif action == "request_reanalysis":
-                store_state["status"] = TaskStatus.RETRYING
-                appr.status = "revision_requested"
-            appr.feedback = feedback
-            appr.decided_at = datetime.now(UTC)
-            store_state["human_approval"] = appr
-            return cast(AegisState, store_state)
+            # Fail closed: without the checkpoint there is nothing to resume. Inventing an outcome
+            # here used to mark re-analysis as RETRYING without re-running anything.
+            raise RuntimeError(f"No checkpoint found for task '{task_id}'; cannot resume.")
 
         current_state = dict(state_snapshot.values)
 

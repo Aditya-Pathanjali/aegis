@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 import warnings
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from aegis.agents.critic import CriticRubricOutput
 from aegis.agents.verification import JudgeVerdict, VerificationAgent
 from aegis.api.main import lifespan
 from aegis.config import Settings, reset_settings
+from aegis.models.llm_outputs import AgentRole as LLMAgentRole
 from aegis.models.llm_outputs import PlannedSubtask, PlanOutput
 from aegis.models.schemas import (
     AgentExecutionResult,
@@ -47,6 +47,7 @@ from aegis.tools.rag_tool import RAGSearchTool
 from aegis.tools.registry import ToolRegistry
 from alembic import command
 from tests.fakes import FakeLLM, fake_text
+from tests.worker_utils import run_worker_burst
 
 
 @pytest.mark.docker
@@ -101,7 +102,7 @@ def test_human_gate_interrupted_task_approved_after_app_recreated(postgres_conta
             PlannedSubtask(
                 id="st-1",
                 description="Search literature guidelines",
-                role=AgentRole.RESEARCH,
+                role=LLMAgentRole.RESEARCH,
                 tools=["rag_search"],
             )
         ],
@@ -126,7 +127,7 @@ def test_human_gate_interrupted_task_approved_after_app_recreated(postgres_conta
     )
 
     # 1. Run initial service instance
-    service1 = OrchestratorService(llm_provider=fake_llm)
+    service1 = OrchestratorService()
     task_id = service1.submit_task(
         TaskSubmission(
             query="Safety overhaul audit",
@@ -135,16 +136,8 @@ def test_human_gate_interrupted_task_approved_after_app_recreated(postgres_conta
         )
     )
 
-    # Wait for task to pause at WAITING_APPROVAL
-    worker_thread = service1._threads.get(task_id)
-    if worker_thread:
-        worker_thread.join(timeout=15.0)
-
-    for _ in range(30):
-        resp = service1.task_store.get_response(task_id)
-        if resp and resp.status == TaskStatus.WAITING_APPROVAL:
-            break
-        time.sleep(0.1)
+    # A worker runs the task until it pauses at WAITING_APPROVAL
+    run_worker_burst(fake_llm)
 
     initial_resp = service1.task_store.get_response(task_id)
     assert initial_resp is not None
@@ -154,16 +147,19 @@ def test_human_gate_interrupted_task_approved_after_app_recreated(postgres_conta
     reset_orchestrator_service()
     reset_checkpointer()
 
-    service2 = OrchestratorService(llm_provider=fake_llm)
-    assert task_id not in service2._orchestrators  # Orchestrator is NOT in memory
+    service2 = OrchestratorService()
 
-    # Operator approves via recreated app
-    updated = service2.resolve_human_approval(
+    # Operator approves via recreated app; a fresh worker resumes from the Postgres checkpoint
+    queued = service2.resolve_human_approval(
         task_id=task_id,
         action=ApprovalAction.APPROVE,
         feedback="Chief Engineer signed off after reboot.",
     )
+    assert queued.status == TaskStatus.QUEUED
+    run_worker_burst(fake_llm)
 
+    updated = service2.task_store.get_response(task_id)
+    assert updated is not None
     assert updated.status == TaskStatus.COMPLETED
     assert updated.report is not None
     assert "Approved maintenance schedule confirmed." in updated.report.executive_summary.final_finding

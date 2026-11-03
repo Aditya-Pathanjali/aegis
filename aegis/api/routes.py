@@ -22,14 +22,13 @@ from aegis.api.schemas import (
 from aegis.config import Settings, get_settings
 from aegis.db.session import check_db_health
 from aegis.models.schemas import (
-    ApprovalAction,
     TaskResponse,
     TaskStatus,
     TaskSubmission,
     TraceEvent,
 )
 from aegis.rag.retriever import get_rag_knowledge_base
-from aegis.services.orchestrator_service import get_orchestrator_service
+from aegis.services.orchestrator_service import QueueUnavailableError, get_orchestrator_service
 
 router = APIRouter(prefix="/api")
 
@@ -44,10 +43,11 @@ def check_redis_health(redis_url: str) -> bool:
 
 
 def check_sandbox_health() -> bool:
+    """True only if a worker reported a working sandbox runtime within the heartbeat TTL."""
+    from aegis.queue import read_sandbox_heartbeat
+
     try:
-        import docker
-        client = docker.from_env(timeout=2)  # type: ignore[attr-defined]
-        return bool(client.ping())
+        return read_sandbox_heartbeat()
     except Exception:
         return False
 
@@ -214,9 +214,9 @@ async def submit_task(request: Request):
         max_retries=max_retries,
     )
     try:
-        task_id = service.submit_task(sub_obj, enqueue=True)
-    except TypeError:
         task_id = service.submit_task(sub_obj)
+    except QueueUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     return {"task_id": task_id, "status": "queued"}
 
 
@@ -250,46 +250,42 @@ async def stream_task_events(
     channel = f"aegis:tasks:{task_id}:events"
     seen_event_ids: set[str] = set()
 
-    # Load historical events from Postgres
-    history = service.task_store.get_trace_events(task_id)
-
-    # Determine replay slice based on Last-Event-ID
-    replay_events = []
-    if last_event_id:
-        found_idx = -1
-        for idx, ev in enumerate(history):
-            if ev.event_id == last_event_id:
-                found_idx = idx
-                break
-        if found_idx >= 0:
-            replay_events = history[found_idx + 1 :]
-        else:
-            replay_events = history
-    else:
-        replay_events = history
-
     async def event_generator():
-        # 1. Replay historical events
-        for ev in replay_events:
-            seen_event_ids.add(ev.event_id)
-            ev_json = json.dumps(ev.model_dump(mode="json"))
-            yield f"id: {ev.event_id}\nevent: message\ndata: {ev_json}\n\n"
-
-        # Check if task is already in terminal state
-        curr = service.task_store.get_state(task_id)
-        curr_status = curr.get("status") if curr else None
-        if curr_status in (TaskStatus.COMPLETED, TaskStatus.REJECTED, TaskStatus.FAILED, TaskStatus.CANCELLED):
-            status_val = curr_status.value if hasattr(curr_status, "value") else str(curr_status)
-            yield f"data: {json.dumps({'event_type': 'stream_end', 'status': status_val})}\n\n"
-            return
-
-        # 2. Subscribe to Redis pub/sub for real-time events
+        # 1. Subscribe BEFORE reading history. Workers persist an event and then publish it, so
+        # anything published after this point is either in the history read below or arrives on
+        # the subscription; seen_event_ids drops the overlap. Reading history first lost events
+        # published between the two steps.
         from aegis.queue import get_async_redis
         redis_client = get_async_redis()
         pubsub = redis_client.pubsub()
         await pubsub.subscribe(channel)
 
         try:
+            history = service.task_store.get_trace_events(task_id)
+            replay_events = history
+            if last_event_id:
+                for idx, ev in enumerate(history):
+                    if ev.event_id == last_event_id:
+                        replay_events = history[idx + 1 :]
+                        break
+                # Everything up to Last-Event-ID was delivered already; never resend it live.
+                seen_event_ids.update(ev.event_id for ev in history[: len(history) - len(replay_events)])
+
+            # 2. Replay historical events
+            for ev in replay_events:
+                seen_event_ids.add(ev.event_id)
+                ev_json = json.dumps(ev.model_dump(mode="json"))
+                yield f"id: {ev.event_id}\nevent: message\ndata: {ev_json}\n\n"
+
+            # Task already finished: nothing more will be published
+            curr = service.task_store.get_state(task_id)
+            curr_status = curr.get("status") if curr else None
+            if curr_status in (TaskStatus.COMPLETED, TaskStatus.REJECTED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+                status_val = curr_status.value if hasattr(curr_status, "value") else str(curr_status)
+                yield f"data: {json.dumps({'event_type': 'stream_end', 'status': status_val})}\n\n"
+                return
+
+            # 3. Live events
             while True:
                 if await request.is_disconnected():
                     break
@@ -373,7 +369,11 @@ async def cancel_task(task_id: str):
         return TaskResponse(task_id=task_id, status=curr_status)
 
     from aegis.queue import set_task_cancelled
-    set_task_cancelled(task_id)
+    try:
+        set_task_cancelled(task_id)
+    except Exception as e:
+        # Fail closed: without the Redis flag the worker would keep running the task.
+        raise HTTPException(status_code=503, detail=f"Cancel could not be delivered to workers: {e}")
 
     state["status"] = TaskStatus.CANCELLED
     service.task_store.save_state(task_id, state)
@@ -411,18 +411,20 @@ async def handle_human_approval(task_id: str, req: ApprovalActionRequest, respon
         )
 
     try:
-        if req.action == ApprovalAction.REQUEST_REANALYSIS:
-            response.status_code = status.HTTP_202_ACCEPTED
         updated_task = service.resolve_human_approval(
             task_id=task_id,
             action=req.action,
             feedback=req.feedback,
         )
-        return updated_task
+    except QueueUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+    # The decision is queued; a worker resumes the checkpoint.
+    response.status_code = status.HTTP_202_ACCEPTED
+    return updated_task
 
 
 # RAG Knowledge Base Endpoints

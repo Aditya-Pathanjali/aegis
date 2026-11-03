@@ -19,9 +19,9 @@ from aegis.agents.verification import JudgeVerdict
 from aegis.api.main import app
 from aegis.config import reset_settings
 from aegis.db import get_task_store
+from aegis.models.llm_outputs import AgentRole as LLMAgentRole
 from aegis.models.llm_outputs import PlannedSubtask, PlanOutput
 from aegis.models.schemas import (
-    AgentRole,
     EvidenceRef,
     Finding,
     SpecialistOutput,
@@ -63,7 +63,7 @@ class WorkflowFakeLLM(FakeLLM):
                 PlannedSubtask(
                     id="st-1",
                     description="Query operational data",
-                    role=AgentRole.DATA_ANALYST,
+                    role=LLMAgentRole.DATA_ANALYST,
                     tools=["sql_query"],
                 )
             ],
@@ -176,8 +176,8 @@ def test_task_runs_end_to_end_in_worker(postgres_container, redis_container):
     assert final_state["status"] == TaskStatus.COMPLETED, f"Errors: {final_state.get('errors')}"
     assert final_state.get("final_report") is not None
     report = final_state["final_report"]
-    title = report.title if hasattr(report, "title") else report["title"]
-    assert title == "Overhaul Audit"
+    assert report is not None
+    assert report.title == "Overhaul Audit"
 
     # Verify API get_task returns completed report
     get_resp = client.get(f"/api/tasks/{task_id}")
@@ -201,13 +201,13 @@ def test_cancel_running_task_stops_worker(postgres_container, redis_container):
             PlannedSubtask(
                 id="st-1",
                 description="Step 1 query",
-                role=AgentRole.DATA_ANALYST,
+                role=LLMAgentRole.DATA_ANALYST,
                 tools=["sql_query"],
             ),
             PlannedSubtask(
                 id="st-2",
                 description="Step 2 research",
-                role=AgentRole.RESEARCH,
+                role=LLMAgentRole.RESEARCH,
                 tools=["rag_search"],
             ),
         ],
@@ -387,6 +387,7 @@ def test_sse_reconnect_with_last_event_id_exact_stream(postgres_container, redis
         publish_trace_event_sync(ev)
 
     st = store.get_state(task_id)
+    assert st is not None
     st["status"] = TaskStatus.COMPLETED
     store.save_state(task_id, st)
 
@@ -530,7 +531,11 @@ def test_human_approval_pause_resume_across_worker_restarts(postgres_container, 
         f"/api/tasks/{task_id}/approve",
         json={"action": "approve", "feedback": "Approved by engineering manager"},
     )
-    assert app_resp.status_code in (200, 202)
+    assert app_resp.status_code == 202
+    # The API only queued the decision: nothing has resumed until a worker runs
+    current = store.get_state(task_id)
+    assert current is not None
+    assert current["status"] == TaskStatus.QUEUED
 
     # 4. Worker 2 (fresh instance simulating process restart) picks up resume job
     async def run_worker_2():
@@ -549,3 +554,22 @@ def test_human_approval_pause_resume_across_worker_restarts(postgres_container, 
     assert final_st is not None
     assert final_st["status"] == TaskStatus.COMPLETED
     assert final_st.get("final_report") is not None
+
+
+@pytest.mark.docker
+def test_cancel_fails_closed_when_redis_is_unreachable(postgres_container, redis_container, monkeypatch):
+    """Without the Redis flag the worker would keep running (and paying for) the task, so the
+    endpoint must refuse instead of reporting a cancel that never reaches the worker."""
+    store = get_task_store()
+    task_id = f"task-cancel-503-{uuid.uuid4().hex[:6]}"
+    store.save_state(task_id, {"task_id": task_id, "query": "q", "status": TaskStatus.EXECUTING, "errors": []})
+
+    def redis_down(task_id: str) -> None:
+        raise ConnectionError("Redis unreachable")
+
+    monkeypatch.setattr("aegis.queue.set_task_cancelled", redis_down)
+    resp = TestClient(app).post(f"/api/tasks/{task_id}/cancel")
+    assert resp.status_code == 503
+    current = store.get_state(task_id)
+    assert current is not None
+    assert current["status"] == TaskStatus.EXECUTING

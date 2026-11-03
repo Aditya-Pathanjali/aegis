@@ -152,6 +152,7 @@ def test_docker_sandbox_escape_memory_exhaustion():
     oom_code = "data = bytearray(500 * 1024 * 1024)"
     res = tool.execute(code=oom_code)
     assert res.success is False
+    assert res.error is not None
     assert "memory limit" in res.error.lower() or "oom" in res.error.lower() or "killed" in res.error.lower()
 
 
@@ -187,6 +188,7 @@ def test_docker_sandbox_escape_getattr_subclasses():
 
     res1 = tool.execute(code=probe1)
     assert res1.success is False
+    assert res1.error is not None
     assert "SecurityViolationError" in res1.error
 
     # __subclasses__ probe
@@ -196,6 +198,7 @@ def test_docker_sandbox_escape_getattr_subclasses():
 
     res2 = tool.execute(code=probe2)
     assert res2.success is False
+    assert res2.error is not None
     assert "SecurityViolationError" in res2.error
 
 
@@ -228,6 +231,7 @@ def test_docker_sandbox_timeout_kills_container_cleanly():
     tool = PythonExecTool(timeout_seconds=2.0)
     res = tool.execute(code="while True:\n    pass")
     assert res.success is False
+    assert res.error is not None
     assert "timed out" in res.error.lower()
 
 
@@ -272,6 +276,7 @@ def test_docker_stopped_returns_error_no_subprocess_started(monkeypatch):
     result = tool.execute(code="x = 1\nprint(x)")
 
     assert result.success is False
+    assert result.error is not None
     assert "Docker sandbox runtime unavailable" in result.error
     assert subprocess_spy.call_count == 0
 
