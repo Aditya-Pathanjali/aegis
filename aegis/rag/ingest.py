@@ -53,15 +53,21 @@ def ingest_corpus(
     if not path.exists():
         raise FileNotFoundError(f"Corpus directory not found: {path}")
 
+    md_files = sorted(list(path.rglob("*.md")))
+    parsed_docs = []
+    for file_path in md_files:
+        content = file_path.read_text(encoding="utf-8")
+        meta, body = parse_markdown_with_frontmatter(content, file_path=file_path)
+        parsed_docs.append((file_path, meta, body))
+
+    if not parsed_docs:
+        return 0
+
     kb = kb or get_rag_knowledge_base()
     chunker = kb.chunker or DocumentChunker()
     total_chunks_indexed = 0
 
-    md_files = sorted(list(path.rglob("*.md")))
-    for file_path in md_files:
-        content = file_path.read_text(encoding="utf-8")
-        meta, body = parse_markdown_with_frontmatter(content, file_path=file_path)
-
+    for file_path, meta, body in parsed_docs:
         doc_id = file_path.stem
         title = meta.get("title", doc_id)
         source_url = meta.get("source_url", str(file_path.name))

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +16,8 @@ class Settings(BaseSettings):
         env_prefix="AEGIS_",
         env_file=".env",
         extra="ignore",
+        # docker compose passes `${VAR:-}` as an empty string when unset; treat that as unset.
+        env_ignore_empty=True,
     )
 
     provider: Optional[Literal["anthropic", "openai"]] = Field(
@@ -30,6 +32,68 @@ class Settings(BaseSettings):
         default=None,
         description="Judge LLM model name for verification.",
     )
+    database_url: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("AEGIS_DATABASE_URL", "DATABASE_URL"),
+        description="PostgreSQL connection string. Required in service mode.",
+    )
+    redis_url: str = Field(
+        default="redis://localhost:6379/0",
+        validation_alias=AliasChoices("AEGIS_REDIS_URL", "REDIS_URL"),
+        description="Redis connection URL.",
+    )
+    task_timeout_s: int = Field(
+        default=600,
+        validation_alias=AliasChoices("AEGIS_TASK_TIMEOUT_S", "TASK_TIMEOUT_S"),
+        description="Execution timeout for queued tasks in seconds.",
+    )
+    max_concurrent_tasks: int = Field(
+        default=4,
+        validation_alias=AliasChoices("AEGIS_MAX_CONCURRENT_TASKS", "MAX_CONCURRENT_TASKS"),
+        description="Global concurrency limit for active tasks.",
+    )
+    sandbox_image: str = Field(
+        default="aegis-sandbox:latest",
+        validation_alias=AliasChoices("AEGIS_SANDBOX_IMAGE", "SANDBOX_IMAGE"),
+        description="Docker image for Python code execution sandbox.",
+    )
+    task_data_dir: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("AEGIS_TASK_DATA_DIR", "TASK_DATA_DIR"),
+        description=(
+            "Directory where per-task working dirs are created. In compose this is the worker's "
+            "mount point of the shared task-data volume; unset, the system temp dir is used."
+        ),
+    )
+    sandbox_task_volume: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("AEGIS_SANDBOX_TASK_VOLUME", "SANDBOX_TASK_VOLUME"),
+        description=(
+            "Named Docker volume mounted at task_data_dir. When set, each sandbox mounts only its "
+            "task's subpath of this volume. Required when the worker itself runs in a container, "
+            "because bind-mount paths are resolved on the Docker host, not inside the worker."
+        ),
+    )
+    sandbox_timeout: float = Field(
+        default=20.0,
+        validation_alias=AliasChoices("AEGIS_SANDBOX_TIMEOUT", "SANDBOX_TIMEOUT"),
+        description="Execution timeout for python sandbox in seconds.",
+    )
+    sandbox_mem_limit: str = Field(
+        default="256m",
+        validation_alias=AliasChoices("AEGIS_SANDBOX_MEM_LIMIT", "SANDBOX_MEM_LIMIT"),
+        description="Memory limit for Python sandbox container.",
+    )
+    sandbox_cpus: float = Field(
+        default=1.0,
+        validation_alias=AliasChoices("AEGIS_SANDBOX_CPUS", "SANDBOX_CPUS"),
+        description="CPU limit for Python sandbox container.",
+    )
+    sandbox_pids_limit: int = Field(
+        default=64,
+        validation_alias=AliasChoices("AEGIS_SANDBOX_PIDS_LIMIT", "SANDBOX_PIDS_LIMIT"),
+        description="PID limit for Python sandbox container.",
+    )
     agent_step_limit: int = Field(
         default=8,
         description="Maximum execution steps per agent.",
@@ -37,10 +101,6 @@ class Settings(BaseSettings):
     tool_output_limit: int = Field(
         default=8000,
         description="Maximum characters for tool output before truncation.",
-    )
-    sandbox_timeout: float = Field(
-        default=20.0,
-        description="Execution timeout for python sandbox in seconds.",
     )
     dataset_max_bytes: int = Field(
         default=20 * 1024 * 1024,
@@ -92,6 +152,8 @@ class Settings(BaseSettings):
         """Enforce that model is explicitly configured whenever provider is set."""
         if self.provider is not None and not self.model:
             raise ValueError("model is required when provider is configured")
+        if (self.sandbox_task_volume is None) != (self.task_data_dir is None):
+            raise ValueError("sandbox_task_volume and task_data_dir must be set together")
         return self
 
 

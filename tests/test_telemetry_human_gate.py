@@ -101,7 +101,8 @@ def test_pause_and_resume_with_command():
     assert resumed_state["human_approval"].feedback == "Approved by engineering lead"
 
 
-def test_reject_approval_attempt_when_task_not_waiting_409():
+@pytest.mark.docker
+def test_reject_approval_attempt_when_task_not_waiting_409(postgres_container):
     """Verify POST /api/tasks/{task_id}/approve returns 409 Conflict when not in WAITING_APPROVAL."""
     client = TestClient(app)
     service = get_orchestrator_service()
@@ -140,7 +141,7 @@ def test_reject_approval_attempt_when_task_not_waiting_409():
     )
     assert resp_404.status_code == 404
 
-    # Case 3: Task waiting for approval succeeds (200)
+    # Case 3: Task waiting for approval: the decision is queued for a worker (202)
     waiting_task_id = "task-waiting-test"
     service.state_store.save_state(
         waiting_task_id,
@@ -158,13 +159,23 @@ def test_reject_approval_attempt_when_task_not_waiting_409():
         f"/api/tasks/{waiting_task_id}/approve",
         json={"action": "approve", "feedback": "Approved"},
     )
-    assert resp_ok.status_code == 200
+    assert resp_ok.status_code == 202
     data = resp_ok.json()
-    assert data["status"] == "completed"
-    assert data["approval_request"]["status"] == "approved"
+    assert data["status"] == "queued"
+    assert data["approval_request"]["status"] == "decision_queued"
+    _assert_resume_job_queued(waiting_task_id)
 
 
-def test_sse_stream_delivers_in_order_with_no_duplicates_on_reconnect():
+def _assert_resume_job_queued(task_id: str) -> None:
+    """The API must hand the decision to a worker, never run the graph itself."""
+    from aegis.queue import get_sync_redis
+
+    queued = [j for j in get_sync_redis().zrange("arq:queue", 0, -1) if j.startswith(f"resume:{task_id}:")]
+    assert queued, f"No resume job queued for {task_id}"
+
+
+@pytest.mark.docker
+def test_sse_stream_delivers_in_order_with_no_duplicates_on_reconnect(postgres_container):
     """Verify GET /api/tasks/{task_id}/events streams in order, deduplicates, and unregisters on disconnect."""
     client = TestClient(app)
     service = get_orchestrator_service()
@@ -222,7 +233,11 @@ def test_sse_stream_delivers_in_order_with_no_duplicates_on_reconnect():
     assert len(received_ids_pass2) == len(set(received_ids_pass2))
 
     # Verify listeners cleaned up on disconnect
-    assert task_id not in service._subscribers or len(service._subscribers[task_id]) == 0
+    # The stream unsubscribed from the task's Redis channel when it ended (finally block)
+    from aegis.queue import get_sync_redis
+
+    channel = f"aegis:tasks:{task_id}:events"
+    assert dict(get_sync_redis().pubsub_numsub(channel)).get(channel, 0) == 0
 
 
 def test_trace_token_counts_match_fake_llm_and_cost_null_for_unpriced_model(tmp_path: Path):
@@ -334,8 +349,9 @@ def test_trace_token_counts_match_fake_llm_and_cost_null_for_unpriced_model(tmp_
         clear_pricing_cache()
 
 
-def test_approve_request_reanalysis_returns_202_and_executing():
-    """Verify POST /api/tasks/{task_id}/approve with request_reanalysis returns HTTP 202 and sets status to EXECUTING."""
+@pytest.mark.docker
+def test_approve_request_reanalysis_returns_202_and_queued(postgres_container):
+    """POST /approve with request_reanalysis returns 202 and queues a resume job for a worker."""
     client = TestClient(app)
     service = get_orchestrator_service()
     task_id = "task-reanalysis-test-202"
@@ -357,24 +373,34 @@ def test_approve_request_reanalysis_returns_202_and_executing():
     )
     assert resp.status_code == 202
     data = resp.json()
-    assert data["status"] == "executing"
-    assert data["approval_request"]["status"] == "revision_requested"
+    assert data["status"] == "queued"
+    assert data["approval_request"]["status"] == "decision_queued"
     assert data["approval_request"]["feedback"] == "Include vibration sensor 4 data."
+    _assert_resume_job_queued(task_id)
 
 
 def test_state_save_failure_fails_task_loudly(caplog):
     """Failing state-save in orchestrator/service fails the task and logs via logger.exception (no silent pass)."""
-    from aegis.memory.state_store import TaskStateStore
+    from aegis.db.repository import PostgresTaskStore
     from aegis.services.orchestrator_service import OrchestratorService
 
-    class FailingStateStore(TaskStateStore):
+    class FailingStateStore(PostgresTaskStore):
+        def __init__(self):
+            self.saved = {}
+
         def save_state(self, task_id: str, state: dict) -> None:
             if state.get("status") != TaskStatus.FAILED:
                 raise IOError("Simulated disk full during state save")
-            super().save_state(task_id, state)
+            self.saved[task_id] = state
+
+        def get_state(self, task_id: str):
+            return self.saved.get(task_id)
+
+        def save_trace_event(self, event):
+            pass
 
     store = FailingStateStore()
-    service = OrchestratorService(state_store=store, llm_provider=FakeLLM())
+    service = OrchestratorService(state_store=store)
 
     with caplog.at_level(logging.ERROR):
         # Attempting submit_task with broken initial state save raises immediately

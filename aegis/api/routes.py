@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import queue
+import logging
 import re
+import uuid
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Request, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Header, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from aegis.api.schemas import (
     ApprovalActionRequest,
@@ -19,17 +20,70 @@ from aegis.api.schemas import (
     RAGSearchRequest,
 )
 from aegis.config import Settings, get_settings
+from aegis.db.session import check_db_health
 from aegis.models.schemas import (
-    ApprovalAction,
     TaskResponse,
     TaskStatus,
     TaskSubmission,
     TraceEvent,
 )
 from aegis.rag.retriever import get_rag_knowledge_base
-from aegis.services.orchestrator_service import get_orchestrator_service
+from aegis.services.orchestrator_service import QueueUnavailableError, get_orchestrator_service
 
 router = APIRouter(prefix="/api")
+
+
+def check_redis_health(redis_url: str) -> bool:
+    try:
+        import redis
+        client = redis.from_url(redis_url, socket_timeout=2.0)
+        return bool(client.ping())
+    except Exception:
+        return False
+
+
+def check_sandbox_health() -> bool:
+    """True only if a worker reported a working sandbox runtime within the heartbeat TTL."""
+    from aegis.queue import read_sandbox_heartbeat
+
+    try:
+        return read_sandbox_heartbeat()
+    except Exception:
+        return False
+
+
+def compute_health_status() -> tuple[int, Dict[str, Any]]:
+    settings = get_settings()
+    db_ok = check_db_health(settings.database_url)
+    redis_ok = check_redis_health(settings.redis_url)
+    sandbox_ok = check_sandbox_health()
+
+    all_healthy = db_ok and redis_ok and sandbox_ok
+    status_code = status.HTTP_200_OK if all_healthy else status.HTTP_503_SERVICE_UNAVAILABLE
+
+    data = {
+        "status": "healthy" if all_healthy else "unhealthy",
+        "service": "Aegis Multi-Agent Orchestrator",
+        "version": "1.0.0",
+        "database": "healthy" if db_ok else "down",
+        "redis": "healthy" if redis_ok else "down",
+        "sandbox": "healthy" if sandbox_ok else "down",
+        "agents": [
+            "PlannerAgent",
+            "ResearchAgent",
+            "DataAnalystAgent",
+            "VerificationAgent",
+            "CriticAgent",
+            "SynthesizerAgent",
+        ],
+    }
+    return status_code, data
+
+
+@router.get("/health")
+def health_check():
+    status_code, data = compute_health_status()
+    return JSONResponse(status_code=status_code, content=data)
 
 
 def _sanitize_columns(columns: List[Any]) -> List[str]:
@@ -74,24 +128,7 @@ def _process_dataset_bytes(raw_bytes: bytes, settings: Settings) -> str:
     return df.to_csv(index=False)
 
 
-@router.get("/health")
-def health_check():
-    return {
-        "status": "healthy",
-        "service": "Aegis Multi-Agent Orchestrator",
-        "version": "1.0.0",
-        "agents": [
-            "PlannerAgent",
-            "ResearchAgent",
-            "DataAnalystAgent",
-            "VerificationAgent",
-            "CriticAgent",
-            "SynthesizerAgent",
-        ],
-    }
-
-
-@router.post("/tasks", response_model=Dict[str, str])
+@router.post("/tasks", response_model=Dict[str, str], status_code=status.HTTP_202_ACCEPTED)
 async def submit_task(request: Request):
     """Submits a new task for autonomous multi-agent decomposition and execution."""
     import os
@@ -169,83 +206,141 @@ async def submit_task(request: Request):
         raise HTTPException(status_code=422, detail="Query cannot be empty.")
 
     service = get_orchestrator_service()
-    task_id = service.submit_task(
-        TaskSubmission(
-            query=query,
-            dataset_name=dataset_name,
-            dataset_content=dataset_content,
-            require_human_approval=require_human_approval,
-            max_retries=max_retries,
-        )
+    sub_obj = TaskSubmission(
+        query=query,
+        dataset_name=dataset_name,
+        dataset_content=dataset_content,
+        require_human_approval=require_human_approval,
+        max_retries=max_retries,
     )
-    return {"task_id": task_id, "status": "submitted"}
+    try:
+        task_id = service.submit_task(sub_obj)
+    except QueueUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return {"task_id": task_id, "status": "queued"}
 
 
 @router.get("/tasks", response_model=List[TaskResponse])
 def list_tasks():
     service = get_orchestrator_service()
-    return service.state_store.list_tasks()
+    return service.task_store.list_tasks()
 
 
 @router.get("/tasks/{task_id}", response_model=TaskResponse)
 def get_task(task_id: str):
     service = get_orchestrator_service()
-    resp = service.state_store.get_response(task_id)
+    resp = service.task_store.get_response(task_id)
     if not resp:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
     return resp
 
 
 @router.get("/tasks/{task_id}/events")
-async def stream_task_events(task_id: str, request: Request):
-    """Server-Sent Events (SSE) endpoint streaming real-time agent execution traces."""
+async def stream_task_events(
+    task_id: str,
+    request: Request,
+    last_event_id: Optional[str] = Header(None, alias="Last-Event-ID"),
+):
+    """Server-Sent Events (SSE) endpoint streaming real-time agent execution traces over Redis pub/sub."""
     service = get_orchestrator_service()
-    event_queue: queue.Queue = queue.Queue()
+    state = service.task_store.get_state(task_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+
+    channel = f"aegis:tasks:{task_id}:events"
     seen_event_ids: set[str] = set()
 
-    # Callback to push into queue
-    def on_event(event: TraceEvent):
-        event_queue.put(event)
-
-    service.subscribe(task_id, on_event)
-
-    # First send existing historical events
-    state = service.state_store.get_state(task_id)
-    existing_events = state.get("trace_events", []) if state else []
-
     async def event_generator():
-        try:
-            # Send historical events with de-duplication
-            for ev in existing_events:
-                if ev.event_id not in seen_event_ids:
-                    seen_event_ids.add(ev.event_id)
-                    yield f"data: {ev.model_dump_json()}\n\n"
+        # 1. Subscribe BEFORE reading history. Workers persist an event and then publish it, so
+        # anything published after this point is either in the history read below or arrives on
+        # the subscription; seen_event_ids drops the overlap. Reading history first lost events
+        # published between the two steps.
+        from aegis.queue import get_async_redis
+        redis_client = get_async_redis()
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe(channel)
 
-            # Stream new events
+        try:
+            history = service.task_store.get_trace_events(task_id)
+            replay_events = history
+            if last_event_id:
+                for idx, ev in enumerate(history):
+                    if ev.event_id == last_event_id:
+                        replay_events = history[idx + 1 :]
+                        break
+                # Everything up to Last-Event-ID was delivered already; never resend it live.
+                seen_event_ids.update(ev.event_id for ev in history[: len(history) - len(replay_events)])
+
+            # 2. Replay historical events
+            for ev in replay_events:
+                seen_event_ids.add(ev.event_id)
+                ev_json = json.dumps(ev.model_dump(mode="json"))
+                yield f"id: {ev.event_id}\nevent: message\ndata: {ev_json}\n\n"
+
+            # Task already finished: nothing more will be published
+            curr = service.task_store.get_state(task_id)
+            curr_status = curr.get("status") if curr else None
+            if curr_status in (TaskStatus.COMPLETED, TaskStatus.REJECTED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+                status_val = curr_status.value if hasattr(curr_status, "value") else str(curr_status)
+                yield f"data: {json.dumps({'event_type': 'stream_end', 'status': status_val})}\n\n"
+                return
+
+            # 3. Live events
             while True:
                 if await request.is_disconnected():
                     break
+
                 try:
-                    # Check for new event non-blocking
-                    ev = event_queue.get_nowait()
-                    if ev.event_id not in seen_event_ids:
-                        seen_event_ids.add(ev.event_id)
-                        yield f"data: {ev.model_dump_json()}\n\n"
-                except queue.Empty:
-                    # Check if task is finished
-                    current_state = service.state_store.get_state(task_id)
-                    status = current_state.get("status") if current_state else None
-                    if status in ["completed", "failed", "rejected", "waiting_approval"]:
-                        while not event_queue.empty():
-                            ev = event_queue.get_nowait()
-                            if ev.event_id not in seen_event_ids:
-                                seen_event_ids.add(ev.event_id)
-                                yield f"data: {ev.model_dump_json()}\n\n"
-                        yield f"data: {json.dumps({'event_type': 'stream_end', 'status': status})}\n\n"
+                    msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
+                    if msg and msg.get("type") == "message":
+                        data_str = msg.get("data")
+                        if isinstance(data_str, bytes):
+                            data_str = data_str.decode("utf-8")
+                        try:
+                            ev_payload = json.loads(data_str)
+                            ev_id = ev_payload.get("event_id")
+                            if ev_id and ev_id not in seen_event_ids:
+                                seen_event_ids.add(ev_id)
+                                yield f"id: {ev_id}\nevent: message\ndata: {data_str}\n\n"
+                        except Exception:
+                            yield f"data: {data_str}\n\n"
+
+                    # Check DB status periodically
+                    st = service.task_store.get_state(task_id)
+                    term_status = st.get("status") if st else None
+                    if term_status in (TaskStatus.COMPLETED, TaskStatus.REJECTED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+                        # Drain any remaining pubsub messages
+                        while True:
+                            rem = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+                            if not rem or rem.get("type") != "message":
+                                break
+                            d_str = rem.get("data")
+                            if isinstance(d_str, bytes):
+                                d_str = d_str.decode("utf-8")
+                            try:
+                                p = json.loads(d_str)
+                                eid = p.get("event_id")
+                                if eid and eid not in seen_event_ids:
+                                    seen_event_ids.add(eid)
+                                    yield f"id: {eid}\nevent: message\ndata: {d_str}\n\n"
+                            except Exception:
+                                pass
+                        status_str = term_status.value if hasattr(term_status, "value") else str(term_status)
+                        yield f"data: {json.dumps({'event_type': 'stream_end', 'status': status_str})}\n\n"
                         break
+
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    logging.getLogger(__name__).debug("Error in pubsub event streaming: %s", exc)
                     await asyncio.sleep(0.1)
+
         finally:
-            service.unsubscribe(task_id, on_event)
+            try:
+                await pubsub.unsubscribe(channel)
+                await pubsub.close()
+            except Exception as e:
+                logging.getLogger(__name__).debug("Error unsubscribing from Redis channel: %s", e)
 
     return StreamingResponse(
         event_generator(),
@@ -258,12 +353,54 @@ async def stream_task_events(task_id: str, request: Request):
     )
 
 
+@router.post("/tasks/{task_id}/cancel", response_model=TaskResponse)
+async def cancel_task(task_id: str):
+    """Cancels a queued or executing task."""
+    service = get_orchestrator_service()
+    state = service.task_store.get_state(task_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+
+    curr_status = state.get("status")
+    if curr_status in (TaskStatus.COMPLETED, TaskStatus.REJECTED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+        resp = service.task_store.get_response(task_id)
+        if resp:
+            return resp
+        return TaskResponse(task_id=task_id, status=curr_status)
+
+    from aegis.queue import set_task_cancelled
+    try:
+        set_task_cancelled(task_id)
+    except Exception as e:
+        # Fail closed: without the Redis flag the worker would keep running the task.
+        raise HTTPException(status_code=503, detail=f"Cancel could not be delivered to workers: {e}")
+
+    state["status"] = TaskStatus.CANCELLED
+    service.task_store.save_state(task_id, state)
+
+    cancel_ev = TraceEvent(
+        event_id=uuid.uuid4().hex[:8],
+        task_id=task_id,
+        event_type="task_cancelled",
+        message=f"Task {task_id} cancelled by operator request.",
+        details={"status": "cancelled"},
+    )
+    service.task_store.save_trace_event(cancel_ev)
+    from aegis.queue import publish_trace_event_sync
+    publish_trace_event_sync(cancel_ev)
+
+    resp = service.task_store.get_response(task_id)
+    if not resp:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' response not found.")
+    return resp
+
+
 @router.post("/tasks/{task_id}/approve", response_model=TaskResponse)
 @router.post("/tasks/{task_id}/approval", response_model=TaskResponse)
-def handle_human_approval(task_id: str, req: ApprovalActionRequest, response: Response):
+async def handle_human_approval(task_id: str, req: ApprovalActionRequest, response: Response):
     """Handles Human-in-the-Loop approval decision (Approve, Reject, Request Re-analysis)."""
     service = get_orchestrator_service()
-    state = service.state_store.get_state(task_id)
+    state = service.task_store.get_state(task_id)
     if not state:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
 
@@ -274,18 +411,20 @@ def handle_human_approval(task_id: str, req: ApprovalActionRequest, response: Re
         )
 
     try:
-        if req.action == ApprovalAction.REQUEST_REANALYSIS:
-            response.status_code = status.HTTP_202_ACCEPTED
         updated_task = service.resolve_human_approval(
             task_id=task_id,
             action=req.action,
             feedback=req.feedback,
         )
-        return updated_task
+    except QueueUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+    # The decision is queued; a worker resumes the checkpoint.
+    response.status_code = status.HTTP_202_ACCEPTED
+    return updated_task
 
 
 # RAG Knowledge Base Endpoints

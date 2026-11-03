@@ -30,13 +30,22 @@ class TaskContext:
     ):
         self.task_id = task_id or str(uuid.uuid4())
         self.dataset: Optional[pd.DataFrame] = dataset
-        self._tempdir = tempfile.TemporaryDirectory(prefix=f"aegis_task_{self.task_id[:8]}_")
+        from aegis.config import get_settings
+
+        # In compose, task_data_dir is the worker's mount of the shared task-data volume, so the
+        # sandbox container can mount this task's subdirectory (see PythonExecTool._dataset_mounts).
+        self._tempdir = tempfile.TemporaryDirectory(
+            prefix=f"aegis_task_{self.task_id[:8]}_", dir=get_settings().task_data_dir
+        )
         self.workdir: Path = Path(self._tempdir.name)
         self.parquet_path: Optional[Path] = None
 
         if self.dataset is not None:
             self.parquet_path = self.workdir / "dataset.parquet"
             self.dataset.to_parquet(self.parquet_path, index=False)
+            # The sandbox runs as uid 1000; mkdtemp creates 0700 dirs owned by the worker user.
+            self.workdir.chmod(0o755)
+            self.parquet_path.chmod(0o644)
 
         # In-memory SQLite connection isolated per task
         self.sqlite_conn: sqlite3.Connection = sqlite3.connect(":memory:", check_same_thread=False)

@@ -17,3 +17,9 @@ openai>=1.30.0
 anthropic>=0.25.0
 torch
 sentence-transformers>=3.0.0
+sqlalchemy>=2.0.0
+alembic>=1.13.0
+langgraph-checkpoint-postgres>=2.0.0
+arq>=0.26.0
+docker>=7.0.0
+

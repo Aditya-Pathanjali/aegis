@@ -11,7 +11,6 @@ from aegis.rag.embeddings import (
 from aegis.rag.retriever import RAGKnowledgeBase, RetrievedEvidence, get_rag_knowledge_base
 from aegis.rag.vector_store import (
     BaseVectorStore,
-    InMemoryVectorStore,
     PostgresVectorStore,
     VectorSearchResult,
     get_vector_store,
@@ -26,7 +25,6 @@ __all__ = [
     "FastDenseEmbeddings",
     "OpenAIEmbeddings",
     "BaseVectorStore",
-    "InMemoryVectorStore",
     "PostgresVectorStore",
     "VectorSearchResult",
     "get_vector_store",

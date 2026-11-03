@@ -8,7 +8,6 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Callable, Dict, Optional, Union, cast
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
@@ -26,6 +25,7 @@ from aegis.models.schemas import (
     TaskStatus,
     TraceEvent,
 )
+from aegis.orchestration.checkpointer import get_checkpointer
 from aegis.orchestration.router import (
     evaluate_quality_pass,
     route_after_human_gate,
@@ -79,7 +79,7 @@ class AegisOrchestrator:
         else:
             self.tool_registry = get_tool_registry()
         self.trace_callback = trace_callback
-        self.checkpointer = checkpointer or MemorySaver()
+        self.checkpointer = checkpointer or get_checkpointer()
 
         # Initialize Agents
         self.planner_agent = PlannerAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
@@ -746,6 +746,11 @@ class AegisOrchestrator:
         """Resumes an interrupted workflow at the human gate."""
         config = {"configurable": {"thread_id": task_id}}
         state_snapshot = self.graph.get_state(config)
+        if not state_snapshot.values:
+            # Fail closed: without the checkpoint there is nothing to resume. Inventing an outcome
+            # here used to mark re-analysis as RETRYING without re-running anything.
+            raise RuntimeError(f"No checkpoint found for task '{task_id}'; cannot resume.")
+
         current_state = dict(state_snapshot.values)
 
         for event in self.graph.stream(Command(resume=decision), config=config):

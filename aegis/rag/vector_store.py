@@ -1,16 +1,19 @@
-"""Vector database abstractions supporting PostgreSQL + pgvector and high-speed in-memory store."""
+"""Vector database implementation using PostgreSQL and pgvector."""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
-import numpy as np
 from pydantic import BaseModel, Field
 
+from aegis.config import get_settings
 from aegis.rag.chunker import DocumentChunk
+
+logger = logging.getLogger(__name__)
 
 
 class VectorSearchResult(BaseModel):
@@ -46,87 +49,18 @@ class BaseVectorStore(ABC):
         pass
 
 
-class InMemoryVectorStore(BaseVectorStore):
-    """High-speed in-memory vector store with cosine similarity via NumPy."""
-
-    def __init__(self):
-        self.chunks: Dict[str, DocumentChunk] = {}
-        self.vectors: Dict[str, np.ndarray] = {}
-        self.doc_registry: Dict[str, Dict[str, Any]] = {}
-
-    def add_chunks(self, chunks: List[DocumentChunk], embeddings: List[List[float]]) -> None:
-        for chunk, emb in zip(chunks, embeddings):
-            is_new = chunk.chunk_id not in self.chunks
-            self.chunks[chunk.chunk_id] = chunk
-            vec = np.array(emb, dtype=np.float32)
-            norm = np.linalg.norm(vec)
-            if norm > 0:
-                vec = vec / norm
-            self.vectors[chunk.chunk_id] = vec
-
-            # Track documents
-            if chunk.doc_id not in self.doc_registry:
-                self.doc_registry[chunk.doc_id] = {
-                    "doc_id": chunk.doc_id,
-                    "title": chunk.metadata.get("title", chunk.doc_id),
-                    "source": chunk.metadata.get("source", "manual_upload"),
-                    "chunk_count": 0,
-                }
-            if is_new:
-                self.doc_registry[chunk.doc_id]["chunk_count"] += 1
-
-    def get_chunk(self, chunk_id: str) -> Optional[DocumentChunk]:
-        return self.chunks.get(chunk_id)
-
-    def search(self, query_embedding: List[float], top_k: int = 5, min_score: float = 0.0) -> List[VectorSearchResult]:
-        if not self.vectors:
-            return []
-
-        q_vec = np.array(query_embedding, dtype=np.float32)
-        q_norm = np.linalg.norm(q_vec)
-        if q_norm > 0:
-            q_vec = q_vec / q_norm
-
-        chunk_ids = list(self.vectors.keys())
-        matrix = np.stack([self.vectors[cid] for cid in chunk_ids])
-        scores = np.dot(matrix, q_vec)
-
-        # Sort descending
-        top_indices = np.argsort(scores)[::-1][:top_k]
-        results: List[VectorSearchResult] = []
-        for idx in top_indices:
-            score = float(scores[idx])
-            if score >= min_score:
-                cid = chunk_ids[idx]
-                chunk = self.chunks[cid]
-                results.append(
-                    VectorSearchResult(
-                        chunk_id=chunk.chunk_id,
-                        doc_id=chunk.doc_id,
-                        text=chunk.text,
-                        score=round(score, 4),
-                        metadata=chunk.metadata,
-                    )
-                )
-        return results
-
-    def list_documents(self) -> List[Dict[str, Any]]:
-        return list(self.doc_registry.values())
-
-    def clear(self) -> None:
-        self.chunks.clear()
-        self.vectors.clear()
-        self.doc_registry.clear()
-
-
 class PostgresVectorStore(BaseVectorStore):
     """PostgreSQL + pgvector implementation using psycopg_pool and HNSW cosine index."""
 
-    def __init__(self, connection_url: Optional[str] = None, timeout: float = 3.0):
+    def __init__(self, connection_url: Optional[str] = None, timeout: float = 5.0):
         from psycopg_pool import ConnectionPool
 
         self.timeout = timeout
-        conn_url = connection_url or os.getenv("DATABASE_URL") or "postgresql://aegis:aegis_secret@localhost:5432/aegis_db"
+        conn_url = connection_url or os.getenv("DATABASE_URL") or get_settings().database_url
+        if not conn_url:
+            raise RuntimeError(
+                "DATABASE_URL is not configured. pgvector is the only supported vector store."
+            )
         self.connection_url: str = conn_url
         self.pool = ConnectionPool(self.connection_url, min_size=1, max_size=10, open=True)
         self._init_db()
@@ -253,20 +187,21 @@ class PostgresVectorStore(BaseVectorStore):
             self.pool.close()
 
 
-# Global Singleton Vector Store instance
-_global_vector_store: Optional[BaseVectorStore] = None
+_global_vector_store: Optional[PostgresVectorStore] = None
 
 
-def get_vector_store(prefer_postgres: Optional[bool] = None) -> BaseVectorStore:
+def get_vector_store(connection_url: Optional[str] = None) -> PostgresVectorStore:
     global _global_vector_store
-    if _global_vector_store is None:
-        use_pg = (
-            prefer_postgres
-            if prefer_postgres is not None
-            else (os.getenv("USE_POSTGRES", "false").lower() == "true")
-        )
-        if use_pg:
-            _global_vector_store = PostgresVectorStore()
-        else:
-            _global_vector_store = InMemoryVectorStore()
+    if _global_vector_store is None or connection_url is not None:
+        store = PostgresVectorStore(connection_url=connection_url)
+        if connection_url is None:
+            _global_vector_store = store
+        return store
     return _global_vector_store
+
+
+def reset_vector_store() -> None:
+    global _global_vector_store
+    if _global_vector_store is not None:
+        _global_vector_store.close()
+    _global_vector_store = None

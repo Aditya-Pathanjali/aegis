@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from aegis.api.routes import router as api_router
+from aegis.config import get_settings
+from aegis.db.session import check_db_health
 from aegis.llm.pricing import load_pricing_registry
 
 
@@ -17,6 +19,14 @@ from aegis.llm.pricing import load_pricing_registry
 async def lifespan(app: FastAPI):
     # Validate pricing configuration at startup
     load_pricing_registry()
+
+    # Fail closed: Refuse startup if DATABASE_URL is missing or DB is unreachable
+    settings = get_settings()
+    if not settings.database_url:
+        raise RuntimeError("DATABASE_URL is not configured. Aegis requires PostgreSQL persistence.")
+    if not check_db_health(settings.database_url):
+        raise RuntimeError(f"Database at '{settings.database_url}' is unreachable.")
+
     yield
 
 
@@ -38,6 +48,15 @@ app.add_middleware(
 
 # Include API router
 app.include_router(api_router)
+
+
+@app.get("/health")
+def root_health():
+    from fastapi.responses import JSONResponse
+
+    from aegis.api.routes import compute_health_status
+    status_code, data = compute_health_status()
+    return JSONResponse(status_code=status_code, content=data)
 
 # Mount frontend static directory if present
 frontend_dist = Path(__file__).resolve().parent.parent.parent / "frontend"

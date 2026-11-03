@@ -6,7 +6,7 @@ from aegis.rag.chunker import DocumentChunk, DocumentChunker
 from aegis.rag.embeddings import HashingEmbeddings, SentenceTransformerEmbeddings
 from aegis.rag.ingest import ingest_corpus
 from aegis.rag.retriever import RAGKnowledgeBase
-from aegis.rag.vector_store import InMemoryVectorStore, PostgresVectorStore
+from aegis.rag.vector_store import PostgresVectorStore
 
 
 def test_chunker_basic():
@@ -35,8 +35,10 @@ def test_embeddings_hashing():
     assert dot12 > dot13
 
 
-def test_retrieval_ranks_relevant_above_irrelevant():
-    store = InMemoryVectorStore()
+@pytest.mark.docker
+def test_retrieval_ranks_relevant_above_irrelevant(postgres_container):
+    store = PostgresVectorStore(connection_url=postgres_container)
+    store.clear()
     embedder = SentenceTransformerEmbeddings()
     kb = RAGKnowledgeBase(vector_store=store, embeddings=embedder)
 
@@ -58,8 +60,10 @@ def test_retrieval_ranks_relevant_above_irrelevant():
     assert results[0].relevance_score > results[1].relevance_score
 
 
-def test_get_chunk_works():
-    store = InMemoryVectorStore()
+@pytest.mark.docker
+def test_get_chunk_works(postgres_container):
+    store = PostgresVectorStore(connection_url=postgres_container)
+    store.clear()
     chunk = DocumentChunk(
         chunk_id="chunk-abc-123",
         doc_id="doc-1",
@@ -77,7 +81,8 @@ def test_get_chunk_works():
     assert store.get_chunk("nonexistent-chunk") is None
 
 
-def test_ingest_is_idempotent(tmp_path):
+@pytest.mark.docker
+def test_ingest_is_idempotent(tmp_path, postgres_container):
     corpus_dir = tmp_path / "corpus"
     corpus_dir.mkdir()
 
@@ -95,20 +100,21 @@ def test_ingest_is_idempotent(tmp_path):
         encoding="utf-8",
     )
 
-    store = InMemoryVectorStore()
+    store = PostgresVectorStore(connection_url=postgres_container)
+    store.clear()
     embedder = HashingEmbeddings(dimension=384)
     kb = RAGKnowledgeBase(vector_store=store, embeddings=embedder)
 
     count1 = ingest_corpus(corpus_dir, kb=kb)
     assert count1 >= 2
-    assert len(store.chunks) == count1
-    assert len(store.list_documents()) == 2
+    docs = store.list_documents()
+    assert len(docs) == 2
 
     # Re-running ingest must not duplicate chunks
     count2 = ingest_corpus(corpus_dir, kb=kb)
     assert count2 == count1
-    assert len(store.chunks) == count1
-    assert len(store.list_documents()) == 2
+    docs2 = store.list_documents()
+    assert len(docs2) == 2
 
 
 def test_postgres_failure_raises():

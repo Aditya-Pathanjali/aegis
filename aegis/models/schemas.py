@@ -33,6 +33,7 @@ class AgentRole(str, Enum):
 
 class TaskStatus(str, Enum):
     PENDING = "pending"
+    QUEUED = "queued"
     PLANNING = "planning"
     EXECUTING = "executing"
     VERIFYING = "verifying"
@@ -43,6 +44,7 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     REJECTED = "rejected"
+    CANCELLED = "cancelled"
 
 
 class ApprovalAction(str, Enum):

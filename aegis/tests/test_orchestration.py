@@ -1,6 +1,7 @@
 """Integration tests for LangGraph state machine orchestration and human review gates."""
 
-import time
+
+import pytest
 
 from aegis.agents.critic import CriticRubricOutput
 from aegis.agents.verification import JudgeVerdict
@@ -21,9 +22,11 @@ from aegis.orchestration.state import AegisState
 from aegis.services.orchestrator_service import OrchestratorService
 from aegis.tools.context import TaskContext
 from tests.fakes import FakeLLM, fake_text, fake_tool_call
+from tests.worker_utils import run_worker_burst
 
 
-def test_orchestrator_complete_run():
+@pytest.mark.docker
+def test_orchestrator_complete_run(postgres_container):
     plan = ExecutionPlan(
         task_id="test-orch-1",
         original_query="Evaluate equipment maintenance feasibility.",
@@ -90,7 +93,8 @@ def test_orchestrator_complete_run():
     assert result["critic_evaluation"].quality_pass is True
 
 
-def test_human_gate_triggering_and_approval():
+@pytest.mark.docker
+def test_human_gate_triggering_and_approval(postgres_container):
     plan = ExecutionPlan(
         task_id="test-gate-1",
         original_query="Analyze equipment with mandatory sign-off.",
@@ -115,9 +119,8 @@ def test_human_gate_triggering_and_approval():
         key_conclusions=[],
         actionable_recommendations=[],
     )
-    service = OrchestratorService(
-        llm_provider=FakeLLM(responses=[plan, fake_text("Done."), res_1, critic_rubric, synth_draft])
-    )
+    fake_llm = FakeLLM(responses=[plan, fake_text("Done."), res_1, critic_rubric, synth_draft])
+    service = OrchestratorService()
     task_id = service.submit_task(
         TaskSubmission(
             query="Analyze equipment with mandatory sign-off.",
@@ -126,12 +129,7 @@ def test_human_gate_triggering_and_approval():
         )
     )
 
-    # Poll briefly for task to reach waiting_approval
-    for _ in range(30):
-        resp = service.state_store.get_response(task_id)
-        if resp and resp.status == TaskStatus.WAITING_APPROVAL:
-            break
-        time.sleep(0.1)
+    run_worker_burst(fake_llm)
 
     resp = service.state_store.get_response(task_id)
     assert resp is not None
@@ -141,10 +139,15 @@ def test_human_gate_triggering_and_approval():
     assert resp.approval_request.proposed_actions == []
 
     # Operator approves
-    updated = service.resolve_human_approval(
+    queued = service.resolve_human_approval(
         task_id=task_id,
         action=ApprovalAction.APPROVE,
         feedback="Authorization granted.",
     )
+    assert queued.status == TaskStatus.QUEUED  # the API only queues the decision
+
+    run_worker_burst(fake_llm)
+    updated = service.state_store.get_response(task_id)
+    assert updated is not None
     assert updated.status == TaskStatus.COMPLETED
     assert updated.approval_request.status == "approved"
