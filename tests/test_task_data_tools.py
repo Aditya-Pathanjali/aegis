@@ -230,12 +230,17 @@ def test_sql_recursive_cte_query_times_out():
     assert "timed out" in res.error.lower()
 
 
+@pytest.mark.docker
 def test_runner_corrupt_parquet_reports_error():
     tool = PythonExecTool()
     with tempfile.TemporaryDirectory() as tmpdir:
         workdir = Path(tmpdir)
-        # Write corrupt parquet
-        (workdir / "dataset.parquet").write_bytes(b"corrupt-parquet-data")
+        # Write corrupt parquet, with the permissions TaskContext gives real task data so the
+        # sandbox's non-root user can read it on Linux (TemporaryDirectory defaults to 0o700).
+        corrupt = workdir / "dataset.parquet"
+        corrupt.write_bytes(b"corrupt-parquet-data")
+        workdir.chmod(0o755)
+        corrupt.chmod(0o644)
         with pytest.raises(RuntimeError, match="Failed to load dataset.parquet"):
             tool._run_subprocess("print('should not execute')", workdir=workdir, timeout=5.0)
 
