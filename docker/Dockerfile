@@ -10,11 +10,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python requirements
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.lock requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.lock
 
-# Copy application code and frontend
+# Copy application code, migrations, and frontend
 COPY aegis/ ./aegis/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
 COPY frontend/ ./frontend/
 COPY pytest.ini .
 

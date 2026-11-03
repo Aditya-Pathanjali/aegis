@@ -25,9 +25,12 @@ class RAGSearchTool(BaseTool):
         "required": ["query"],
     }
 
+    def __init__(self, kb: Any = None, retriever: Any = None) -> None:
+        self.retriever = kb or retriever
+
     def _run(self, query: str, k: int = 3, **kwargs: Any) -> Dict[str, Any]:
         top_k = kwargs.get("top_k", k)
-        kb = get_rag_knowledge_base()
+        kb = self.retriever or get_rag_knowledge_base()
         evidence_list = kb.retrieve(query=query, top_k=top_k)
 
         formatted_evidence = []

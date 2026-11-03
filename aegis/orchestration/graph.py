@@ -8,7 +8,6 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Callable, Dict, Optional, Union, cast
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
@@ -26,6 +25,7 @@ from aegis.models.schemas import (
     TaskStatus,
     TraceEvent,
 )
+from aegis.orchestration.checkpointer import get_checkpointer
 from aegis.orchestration.router import (
     evaluate_quality_pass,
     route_after_human_gate,
@@ -79,7 +79,7 @@ class AegisOrchestrator:
         else:
             self.tool_registry = get_tool_registry()
         self.trace_callback = trace_callback
-        self.checkpointer = checkpointer or MemorySaver()
+        self.checkpointer = checkpointer or get_checkpointer()
 
         # Initialize Agents
         self.planner_agent = PlannerAgent(llm_provider=self.llm, tool_registry=self.tool_registry)
@@ -746,6 +746,26 @@ class AegisOrchestrator:
         """Resumes an interrupted workflow at the human gate."""
         config = {"configurable": {"thread_id": task_id}}
         state_snapshot = self.graph.get_state(config)
+        if not state_snapshot.values:
+            from aegis.db import get_task_store
+            store_state = dict(get_task_store().get_state(task_id) or {})
+            action = decision.get("action", "approve") if isinstance(decision, dict) else str(decision)
+            feedback = decision.get("feedback") if isinstance(decision, dict) else None
+            appr = store_state.get("human_approval") or HumanApprovalRequest(task_id=task_id)
+            if action == "approve":
+                store_state["status"] = TaskStatus.COMPLETED
+                appr.status = "approved"
+            elif action == "reject":
+                store_state["status"] = TaskStatus.REJECTED
+                appr.status = "rejected"
+            elif action == "request_reanalysis":
+                store_state["status"] = TaskStatus.RETRYING
+                appr.status = "revision_requested"
+            appr.feedback = feedback
+            appr.decided_at = datetime.now(UTC)
+            store_state["human_approval"] = appr
+            return cast(AegisState, store_state)
+
         current_state = dict(state_snapshot.values)
 
         for event in self.graph.stream(Command(resume=decision), config=config):

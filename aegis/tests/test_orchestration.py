@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 from aegis.agents.critic import CriticRubricOutput
 from aegis.agents.verification import JudgeVerdict
 from aegis.models.schemas import (
@@ -23,7 +25,8 @@ from aegis.tools.context import TaskContext
 from tests.fakes import FakeLLM, fake_text, fake_tool_call
 
 
-def test_orchestrator_complete_run():
+@pytest.mark.docker
+def test_orchestrator_complete_run(postgres_container):
     plan = ExecutionPlan(
         task_id="test-orch-1",
         original_query="Evaluate equipment maintenance feasibility.",
@@ -90,7 +93,8 @@ def test_orchestrator_complete_run():
     assert result["critic_evaluation"].quality_pass is True
 
 
-def test_human_gate_triggering_and_approval():
+@pytest.mark.docker
+def test_human_gate_triggering_and_approval(postgres_container):
     plan = ExecutionPlan(
         task_id="test-gate-1",
         original_query="Analyze equipment with mandatory sign-off.",
@@ -125,6 +129,10 @@ def test_human_gate_triggering_and_approval():
             max_retries=0,
         )
     )
+
+    worker_thread = service._threads.get(task_id)
+    if worker_thread:
+        worker_thread.join(timeout=15.0)
 
     # Poll briefly for task to reach waiting_approval
     for _ in range(30):

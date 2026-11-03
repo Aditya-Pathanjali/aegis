@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Request, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from aegis.api.schemas import (
     ApprovalActionRequest,
@@ -19,6 +19,7 @@ from aegis.api.schemas import (
     RAGSearchRequest,
 )
 from aegis.config import Settings, get_settings
+from aegis.db.session import check_db_health
 from aegis.models.schemas import (
     ApprovalAction,
     TaskResponse,
@@ -30,6 +31,58 @@ from aegis.rag.retriever import get_rag_knowledge_base
 from aegis.services.orchestrator_service import get_orchestrator_service
 
 router = APIRouter(prefix="/api")
+
+
+def check_redis_health(redis_url: str) -> bool:
+    try:
+        import redis
+        client = redis.from_url(redis_url, socket_timeout=2.0)
+        return bool(client.ping())
+    except Exception:
+        return False
+
+
+def check_sandbox_health() -> bool:
+    try:
+        import docker
+        client = docker.from_env(timeout=2)
+        return bool(client.ping())
+    except Exception:
+        return False
+
+
+def compute_health_status() -> tuple[int, Dict[str, Any]]:
+    settings = get_settings()
+    db_ok = check_db_health(settings.database_url)
+    redis_ok = check_redis_health(settings.redis_url)
+    sandbox_ok = check_sandbox_health()
+
+    all_healthy = db_ok and redis_ok and sandbox_ok
+    status_code = status.HTTP_200_OK if all_healthy else status.HTTP_503_SERVICE_UNAVAILABLE
+
+    data = {
+        "status": "healthy" if all_healthy else "unhealthy",
+        "service": "Aegis Multi-Agent Orchestrator",
+        "version": "1.0.0",
+        "database": "healthy" if db_ok else "down",
+        "redis": "healthy" if redis_ok else "down",
+        "sandbox": "healthy" if sandbox_ok else "down",
+        "agents": [
+            "PlannerAgent",
+            "ResearchAgent",
+            "DataAnalystAgent",
+            "VerificationAgent",
+            "CriticAgent",
+            "SynthesizerAgent",
+        ],
+    }
+    return status_code, data
+
+
+@router.get("/health")
+def health_check():
+    status_code, data = compute_health_status()
+    return JSONResponse(status_code=status_code, content=data)
 
 
 def _sanitize_columns(columns: List[Any]) -> List[str]:
@@ -72,23 +125,6 @@ def _process_dataset_bytes(raw_bytes: bytes, settings: Settings) -> str:
 
     df.columns = _sanitize_columns(list(df.columns))
     return df.to_csv(index=False)
-
-
-@router.get("/health")
-def health_check():
-    return {
-        "status": "healthy",
-        "service": "Aegis Multi-Agent Orchestrator",
-        "version": "1.0.0",
-        "agents": [
-            "PlannerAgent",
-            "ResearchAgent",
-            "DataAnalystAgent",
-            "VerificationAgent",
-            "CriticAgent",
-            "SynthesizerAgent",
-        ],
-    }
 
 
 @router.post("/tasks", response_model=Dict[str, str])
@@ -184,13 +220,13 @@ async def submit_task(request: Request):
 @router.get("/tasks", response_model=List[TaskResponse])
 def list_tasks():
     service = get_orchestrator_service()
-    return service.state_store.list_tasks()
+    return service.task_store.list_tasks()
 
 
 @router.get("/tasks/{task_id}", response_model=TaskResponse)
 def get_task(task_id: str):
     service = get_orchestrator_service()
-    resp = service.state_store.get_response(task_id)
+    resp = service.task_store.get_response(task_id)
     if not resp:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
     return resp
@@ -210,7 +246,7 @@ async def stream_task_events(task_id: str, request: Request):
     service.subscribe(task_id, on_event)
 
     # First send existing historical events
-    state = service.state_store.get_state(task_id)
+    state = service.task_store.get_state(task_id)
     existing_events = state.get("trace_events", []) if state else []
 
     async def event_generator():
@@ -233,7 +269,7 @@ async def stream_task_events(task_id: str, request: Request):
                         yield f"data: {ev.model_dump_json()}\n\n"
                 except queue.Empty:
                     # Check if task is finished
-                    current_state = service.state_store.get_state(task_id)
+                    current_state = service.task_store.get_state(task_id)
                     status = current_state.get("status") if current_state else None
                     if status in ["completed", "failed", "rejected", "waiting_approval"]:
                         while not event_queue.empty():
@@ -263,7 +299,7 @@ async def stream_task_events(task_id: str, request: Request):
 def handle_human_approval(task_id: str, req: ApprovalActionRequest, response: Response):
     """Handles Human-in-the-Loop approval decision (Approve, Reject, Request Re-analysis)."""
     service = get_orchestrator_service()
-    state = service.state_store.get_state(task_id)
+    state = service.task_store.get_state(task_id)
     if not state:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
 

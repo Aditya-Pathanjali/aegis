@@ -11,8 +11,8 @@ from typing import Callable, Dict, List, Optional
 
 import pandas as pd
 
+from aegis.db.repository import PostgresTaskStore, get_task_store
 from aegis.llm import LLMProvider, get_llm_provider
-from aegis.memory.state_store import TaskStateStore, get_state_store
 from aegis.memory.trace_logger import TraceLogger, get_trace_logger
 from aegis.models.schemas import (
     ApprovalAction,
@@ -35,15 +35,17 @@ class OrchestratorService:
 
     def __init__(
         self,
-        state_store: Optional[TaskStateStore] = None,
+        state_store: Optional[PostgresTaskStore] = None,
         trace_logger: Optional[TraceLogger] = None,
         llm_provider: Optional[LLMProvider] = None,
     ):
-        self.state_store = state_store or get_state_store()
+        self.task_store = state_store or get_task_store()
+        self.state_store = self.task_store  # Backward-compatibility alias
         self.trace_logger = trace_logger or get_trace_logger()
         self.llm = llm_provider
         self._subscribers: Dict[str, List[Callable[[TraceEvent], None]]] = {}
         self._orchestrators: Dict[str, AegisOrchestrator] = {}
+        self._threads: Dict[str, threading.Thread] = {}
 
     def subscribe(self, task_id: str, callback: Callable[[TraceEvent], None]) -> None:
         if task_id not in self._subscribers:
@@ -51,20 +53,23 @@ class OrchestratorService:
         self._subscribers[task_id].append(callback)
 
     def unsubscribe(self, task_id: str, callback: Callable[[TraceEvent], None]) -> None:
-        if task_id in self._subscribers:
-            if callback in self._subscribers[task_id]:
-                self._subscribers[task_id].remove(callback)
+        if task_id in self._subscribers and callback in self._subscribers[task_id]:
+            self._subscribers[task_id].remove(callback)
             if not self._subscribers[task_id]:
-                del self._subscribers[task_id]
+                self._subscribers.pop(task_id, None)
 
     def _broadcast_event(self, event: TraceEvent) -> None:
         self.trace_logger.log(event)
+        try:
+            self.task_store.save_trace_event(event)
+        except Exception as exc:
+            logger.debug("Could not persist trace event to db: %s", exc)
         subscribers = self._subscribers.get(event.task_id, [])
         for cb in subscribers:
             try:
                 cb(event)
-            except Exception as exc:
-                logger.exception("Error broadcasting event to subscriber: %s", exc)
+            except Exception:
+                pass
 
     def submit_task(self, submission: TaskSubmission) -> str:
         task_id = f"task-{uuid.uuid4().hex[:8]}"
@@ -88,7 +93,7 @@ class OrchestratorService:
         }
 
         try:
-            self.state_store.save_state(task_id, initial_state)
+            self.task_store.save_state(task_id, initial_state)
         except Exception as exc:
             logger.exception("Failed to save initial state for task %s: %s", task_id, exc)
             raise
@@ -99,6 +104,7 @@ class OrchestratorService:
             args=(task_id, initial_state, submission),
             daemon=True,
         )
+        self._threads[task_id] = thread
         thread.start()
 
         return task_id
@@ -132,14 +138,14 @@ class OrchestratorService:
 
             def on_node(s):
                 try:
-                    self.state_store.save_state(task_id, s)
+                    self.task_store.save_state(task_id, s)
                 except Exception as exc:
                     logger.exception("Failed to save state during on_node for task %s: %s", task_id, exc)
                     raise
 
             final_state = orchestrator.run(initial_state, on_node_finish=on_node)
             try:
-                self.state_store.save_state(task_id, final_state)
+                self.task_store.save_state(task_id, final_state)
             except Exception as exc:
                 logger.exception("Failed to save final state for task %s: %s", task_id, exc)
                 raise
@@ -152,7 +158,7 @@ class OrchestratorService:
         except Exception as e:
             logger.exception("Workflow worker execution failed for task %s: %s", task_id, e)
             try:
-                state = self.state_store.get_state(task_id) or initial_state
+                state = self.task_store.get_state(task_id) or initial_state
                 state["status"] = TaskStatus.FAILED
                 state["errors"].append(str(e))
                 self._broadcast_event(
@@ -164,7 +170,7 @@ class OrchestratorService:
                         details={"error": str(e)},
                     )
                 )
-                self.state_store.save_state(task_id, state)
+                self.task_store.save_state(task_id, state)
             except Exception as save_err:
                 logger.exception("Failed to record error state for task %s: %s", task_id, save_err)
             self._orchestrators.pop(task_id, None)
@@ -174,7 +180,7 @@ class OrchestratorService:
                 except Exception as clean_err:
                     logger.exception("Failed to clean task context for task %s: %s", task_id, clean_err)
         finally:
-            st = self.state_store.get_state(task_id)
+            st = self.task_store.get_state(task_id)
             if st and st.get("status") != TaskStatus.WAITING_APPROVAL:
                 self._orchestrators.pop(task_id, None)
                 if task_context is not None:
@@ -186,28 +192,51 @@ class OrchestratorService:
         action: ApprovalAction,
         feedback: Optional[str] = None,
     ) -> TaskResponse:
-        state = self.state_store.get_state(task_id)
+        state = self.task_store.get_state(task_id)
         if not state:
             raise KeyError(f"Task '{task_id}' not found.")
 
-        if state.get("status") != TaskStatus.WAITING_APPROVAL:
-            raise ValueError(f"Task '{task_id}' is not in WAITING_APPROVAL status.")
+        req: Optional[HumanApprovalRequest] = state.get("human_approval")
+        if not req:
+            req = HumanApprovalRequest(task_id=task_id)
 
-        orchestrator = self._orchestrators.get(task_id)
         action_val = action.value if hasattr(action, "value") else str(action)
+        orchestrator = self._orchestrators.get(task_id)
+
+        # If orchestrator is not in memory (e.g. app restart), attempt to recreate from checkpointer
+        if orchestrator is None:
+            try:
+                task_context: Optional[TaskContext] = None
+                if state.get("dataset_content"):
+                    try:
+                        df = pd.read_csv(io.StringIO(state["dataset_content"]))
+                        task_context = TaskContext(dataset=df, task_id=task_id)
+                    except Exception:
+                        pass
+                llm = self.llm or get_llm_provider()
+                tool_reg = ToolRegistry.from_context(task_context) if task_context else None
+                orchestrator = AegisOrchestrator(
+                    llm_provider=llm,
+                    tool_registry=tool_reg,
+                    task_context=task_context,
+                    trace_callback=self._broadcast_event,
+                )
+                self._orchestrators[task_id] = orchestrator
+            except Exception as exc:
+                logger.debug("Could not recreate orchestrator: %s", exc)
+                orchestrator = None
 
         if action == ApprovalAction.REQUEST_REANALYSIS:
-            req = state.get("human_approval") or HumanApprovalRequest(task_id=task_id)
-            req.decided_at = datetime.now(UTC)
-            req.feedback = feedback
             req.status = "revision_requested"
-            state["human_approval"] = req
             state["status"] = TaskStatus.EXECUTING
+            req.feedback = feedback
+            req.decided_at = datetime.now(UTC)
+            state["human_approval"] = req
             state["critic_evaluation"] = None
             state["current_subtask_index"] = 0
             state["retry_count"] = state.get("retry_count", 0) + 1
             try:
-                self.state_store.save_state(task_id, state)
+                self.task_store.save_state(task_id, state)
             except Exception as exc:
                 logger.exception("Failed to save state during reanalysis request for task %s: %s", task_id, exc)
                 raise
@@ -225,7 +254,7 @@ class OrchestratorService:
             if orchestrator is not None:
                 def on_node(s):
                     try:
-                        self.state_store.save_state(task_id, s)
+                        self.task_store.save_state(task_id, s)
                     except Exception as exc:
                         logger.exception("Failed to save state during resume on_node for task %s: %s", task_id, exc)
                         raise
@@ -238,21 +267,21 @@ class OrchestratorService:
                             on_node_finish=on_node,
                         )
                         try:
-                            self.state_store.save_state(task_id, final_state)
+                            self.task_store.save_state(task_id, final_state)
                         except Exception as exc:
                             logger.exception("Failed to save final state after resume for task %s: %s", task_id, exc)
                             raise
                     except Exception as e:
                         logger.exception("Resume reanalysis failed for task %s: %s", task_id, e)
                         try:
-                            err_st = self.state_store.get_state(task_id) or state
+                            err_st = self.task_store.get_state(task_id) or state
                             err_st["status"] = TaskStatus.FAILED
                             err_st["errors"].append(str(e))
-                            self.state_store.save_state(task_id, err_st)
+                            self.task_store.save_state(task_id, err_st)
                         except Exception as save_err:
                             logger.exception("Failed to save failed state for task %s: %s", task_id, save_err)
                     finally:
-                        st = self.state_store.get_state(task_id)
+                        st = self.task_store.get_state(task_id)
                         if st and st.get("status") in (TaskStatus.COMPLETED, TaskStatus.REJECTED, TaskStatus.FAILED):
                             self._orchestrators.pop(task_id, None)
                             if hasattr(orchestrator, "task_context") and orchestrator.task_context is not None:
@@ -264,13 +293,13 @@ class OrchestratorService:
                 thread = threading.Thread(target=_resume_worker, daemon=True)
                 thread.start()
 
-            return self.state_store.get_response(task_id)
+            return self.task_store.get_response(task_id)  # type: ignore[return-value]
 
         # APPROVE or REJECT:
         if orchestrator is not None:
-            def on_node(s):
+            def on_node_resume(s):
                 try:
-                    self.state_store.save_state(task_id, s)
+                    self.task_store.save_state(task_id, s)
                 except Exception as exc:
                     logger.exception("Failed to save state during resume on_node for task %s: %s", task_id, exc)
                     raise
@@ -278,10 +307,10 @@ class OrchestratorService:
             final_state = orchestrator.resume(
                 task_id=task_id,
                 decision={"action": action_val, "feedback": feedback},
-                on_node_finish=on_node,
+                on_node_finish=on_node_resume,
             )
             try:
-                self.state_store.save_state(task_id, final_state)
+                self.task_store.save_state(task_id, final_state)
             except Exception as exc:
                 logger.exception("Failed to save final state after resume for task %s: %s", task_id, exc)
                 raise
@@ -294,10 +323,8 @@ class OrchestratorService:
                     except Exception as exc:
                         logger.exception("Failed to cleanup task context: %s", exc)
         else:
-            req = state.get("human_approval") or HumanApprovalRequest(task_id=task_id)
             req.decided_at = datetime.now(UTC)
             req.feedback = feedback
-
             if action == ApprovalAction.APPROVE:
                 req.status = "approved"
                 state["status"] = TaskStatus.COMPLETED
@@ -320,12 +347,12 @@ class OrchestratorService:
                 )
             )
             try:
-                self.state_store.save_state(task_id, state)
+                self.task_store.save_state(task_id, state)
             except Exception as exc:
                 logger.exception("Failed to save state in fallback approval for task %s: %s", task_id, exc)
                 raise
 
-        return self.state_store.get_response(task_id)
+        return self.task_store.get_response(task_id)  # type: ignore[return-value]
 
 
 _global_orchestrator_service: Optional[OrchestratorService] = None
@@ -336,3 +363,8 @@ def get_orchestrator_service() -> OrchestratorService:
     if _global_orchestrator_service is None:
         _global_orchestrator_service = OrchestratorService()
     return _global_orchestrator_service
+
+
+def reset_orchestrator_service() -> None:
+    global _global_orchestrator_service
+    _global_orchestrator_service = None

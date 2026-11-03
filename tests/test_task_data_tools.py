@@ -188,6 +188,7 @@ def test_oversized_csv_returns_422(monkeypatch):
 
     # 5. Column name sanitization
     reset_settings(Settings(provider="anthropic", model="claude-sonnet-5-5"))
+    monkeypatch.setattr("aegis.services.orchestrator_service.OrchestratorService.submit_task", lambda self, sub: "task-clean-id")
     messy_csv = "  First-Col! , Second@Col # \n1,2\n"
     resp_clean = client.post(
         "/api/tasks",
@@ -242,7 +243,8 @@ def test_runner_corrupt_parquet_reports_error():
             tool._run_subprocess("print('should not execute')", workdir=workdir, timeout=5.0)
 
 
-def test_orchestrator_worker_fails_on_unparseable_csv():
+@pytest.mark.docker
+def test_orchestrator_worker_fails_on_unparseable_csv(postgres_container):
     from aegis.models.schemas import TaskSubmission
     from aegis.services.orchestrator_service import OrchestratorService
     from tests.fakes import FakeLLM

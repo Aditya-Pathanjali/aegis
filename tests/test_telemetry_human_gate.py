@@ -101,7 +101,8 @@ def test_pause_and_resume_with_command():
     assert resumed_state["human_approval"].feedback == "Approved by engineering lead"
 
 
-def test_reject_approval_attempt_when_task_not_waiting_409():
+@pytest.mark.docker
+def test_reject_approval_attempt_when_task_not_waiting_409(postgres_container):
     """Verify POST /api/tasks/{task_id}/approve returns 409 Conflict when not in WAITING_APPROVAL."""
     client = TestClient(app)
     service = get_orchestrator_service()
@@ -164,7 +165,8 @@ def test_reject_approval_attempt_when_task_not_waiting_409():
     assert data["approval_request"]["status"] == "approved"
 
 
-def test_sse_stream_delivers_in_order_with_no_duplicates_on_reconnect():
+@pytest.mark.docker
+def test_sse_stream_delivers_in_order_with_no_duplicates_on_reconnect(postgres_container):
     """Verify GET /api/tasks/{task_id}/events streams in order, deduplicates, and unregisters on disconnect."""
     client = TestClient(app)
     service = get_orchestrator_service()
@@ -334,7 +336,8 @@ def test_trace_token_counts_match_fake_llm_and_cost_null_for_unpriced_model(tmp_
         clear_pricing_cache()
 
 
-def test_approve_request_reanalysis_returns_202_and_executing():
+@pytest.mark.docker
+def test_approve_request_reanalysis_returns_202_and_executing(postgres_container):
     """Verify POST /api/tasks/{task_id}/approve with request_reanalysis returns HTTP 202 and sets status to EXECUTING."""
     client = TestClient(app)
     service = get_orchestrator_service()
@@ -364,14 +367,23 @@ def test_approve_request_reanalysis_returns_202_and_executing():
 
 def test_state_save_failure_fails_task_loudly(caplog):
     """Failing state-save in orchestrator/service fails the task and logs via logger.exception (no silent pass)."""
-    from aegis.memory.state_store import TaskStateStore
+    from aegis.db.repository import PostgresTaskStore
     from aegis.services.orchestrator_service import OrchestratorService
 
-    class FailingStateStore(TaskStateStore):
+    class FailingStateStore(PostgresTaskStore):
+        def __init__(self):
+            self.saved = {}
+
         def save_state(self, task_id: str, state: dict) -> None:
             if state.get("status") != TaskStatus.FAILED:
                 raise IOError("Simulated disk full during state save")
-            super().save_state(task_id, state)
+            self.saved[task_id] = state
+
+        def get_state(self, task_id: str):
+            return self.saved.get(task_id)
+
+        def save_trace_event(self, event):
+            pass
 
     store = FailingStateStore()
     service = OrchestratorService(state_store=store, llm_provider=FakeLLM())

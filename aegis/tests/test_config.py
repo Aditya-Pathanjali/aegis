@@ -119,6 +119,7 @@ def test_submit_task_succeeds_when_provider_and_key_configured(monkeypatch):
     reset_settings(Settings(provider="anthropic", model="claude-sonnet-5-5"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
     monkeypatch.setattr("aegis.services.orchestrator_service.get_llm_provider", lambda: FakeLLM(model="test"))
+    monkeypatch.setattr("aegis.services.orchestrator_service.OrchestratorService.submit_task", lambda self, sub: "task-configured-id")
 
     client = TestClient(app)
     resp = client.post(
