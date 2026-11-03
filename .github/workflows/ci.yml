@@ -28,6 +28,10 @@ jobs:
         run: |
           ruff check .
 
+      - name: Build sandbox image for Docker tests
+        run: |
+          docker build -t aegis-sandbox:latest -f docker/sandbox.Dockerfile .
+
       - name: Run Pytest Suite
         run: |
           pytest -v --durations=10
